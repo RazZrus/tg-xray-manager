@@ -39,18 +39,13 @@ if [[ -f "$BOT_DIR/scripts/xray-mgr.sh" ]]; then
   fi
 fi
 
-# 5. Перезапуск через PM2
-step "Перезапуск PM2"
-if command -v pm2 &>/dev/null; then
-  if pm2 describe tg-xray-bot &>/dev/null; then
-    pm2 restart tg-xray-bot
-    log "Бот перезапущен"
-  else
-    warn "PM2-процесс tg-xray-bot не найден. Запустите вручную:"
-    echo "  pm2 start $BOT_DIR/ecosystem.config.js"
-  fi
+# 5. Перезапуск сервиса
+step "Перезапуск tg-xray-bot"
+if systemctl is-active tg-xray-bot &>/dev/null; then
+  systemctl restart tg-xray-bot
+  log "Бот перезапущен"
 else
-  warn "PM2 не найден. Перезапустите бот вручную."
+  warn "Сервис tg-xray-bot не запущен. Запустите: systemctl start tg-xray-bot"
 fi
 
 echo ""

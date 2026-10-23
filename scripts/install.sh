@@ -262,12 +262,77 @@ install_bot() {
   log "tg-xray-manager установлен в $INSTALL_DIR"
 }
 
-# ─── PM2 ─────────────────────────────────────────────────────────────────────
+# ─── systemd-сервис ──────────────────────────────────────────────────────────
 
-setup_pm2() {
-  step "Настройка PM2"
-  command -v pm2 &>/dev/null || npm install -g pm2
-  log "PM2 $(pm2 --version) готов"
+setup_systemd_service() {
+  step "Настройка systemd-сервиса tg-xray-bot"
+
+  cat > /etc/systemd/system/tg-xray-bot.service <<EOF
+[Unit]
+Description=Telegram Xray VPN Manager Bot
+After=network.target xray.service
+
+[Service]
+Type=simple
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=$(command -v node) ${INSTALL_DIR}/dist/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable tg-xray-bot
+  log "Сервис tg-xray-bot создан и включён в автозапуск"
+}
+
+# ─── Настройка бота (конфиг) ──────────────────────────────────────────────────
+
+configure_bot() {
+  local config_dir="/root/.tg-xray-bot"
+  local config_path="${config_dir}/config.json"
+
+  if [[ -f "$config_path" ]]; then
+    if ! confirm "Конфиг бота уже существует. Перенастроить?"; then
+      log "Используется существующий конфиг"
+      return
+    fi
+  fi
+
+  step "Настройка Telegram-бота"
+
+  local bot_token admin_id stats_port
+  bot_token=$(inputbox "Telegram Bot Token (от @BotFather)" "")
+  admin_id=$(inputbox "Ваш Telegram ID (узнать у @userinfobot)" "")
+  stats_port=$(inputbox "Порт gRPC Stats API xray" "10085")
+
+  # Определяем server_ip и xray_port из конфига xray если есть
+  local server_ip xray_port sni
+  if [[ -f /usr/local/etc/xray/config.json ]]; then
+    xray_port=$(jq -r '.inbounds[0].port // 443' /usr/local/etc/xray/config.json)
+    sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"' /usr/local/etc/xray/config.json)
+  else
+    xray_port=443
+    sni="www.microsoft.com"
+  fi
+  server_ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
+
+  mkdir -p "$config_dir"
+  cat > "$config_path" <<EOF
+{
+  "botToken": "${bot_token}",
+  "adminIds": [${admin_id}],
+  "serverIp": "${server_ip}",
+  "xrayPort": ${xray_port},
+  "sni": "${sni}",
+  "statsPort": ${stats_port}
+}
+EOF
+  chmod 600 "$config_path"
+  log "Конфиг бота сохранён: $config_path"
 }
 
 # ─── Главное меню ────────────────────────────────────────────────────────────
@@ -290,8 +355,10 @@ main() {
       install_xray_mgr
       patch_xray_config_for_stats
       systemctl restart xray
-      setup_pm2
       install_bot
+      configure_bot
+      setup_systemd_service
+      systemctl start tg-xray-bot
       ;;
     B)
       local auto_ip
@@ -307,18 +374,21 @@ main() {
       generate_xray_config "$server_ip" "$xray_port" "$sni"
       systemctl enable --now xray
       install_xray_mgr
-      setup_pm2
       install_bot
+      configure_bot
+      setup_systemd_service
+      systemctl start tg-xray-bot
       ;;
   esac
 
   clear
   echo ""
-  log "Установка завершена!"
+  log "Установка завершена! Бот запущен."
   echo ""
-  echo "  Первый запуск:  tg-xray-bot"
-  echo "  Обновление:     bash ${INSTALL_DIR}/scripts/update.sh"
-  echo "  Удаление:       bash ${INSTALL_DIR}/scripts/uninstall.sh"
+  echo "  Управление:    systemctl {start|stop|restart|status} tg-xray-bot"
+  echo "  Логи:          journalctl -u tg-xray-bot -f"
+  echo "  Обновление:    bash ${INSTALL_DIR}/scripts/update.sh"
+  echo "  Удаление:      bash ${INSTALL_DIR}/scripts/uninstall.sh"
   echo ""
 }
 

@@ -18,7 +18,7 @@ echo "║       tg-xray-bot uninstaller        ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 echo "Будет удалено:"
-echo "  • PM2-процесс tg-xray-bot"
+echo "  • systemd-сервис tg-xray-bot"
 echo "  • /usr/local/bin/xray-mgr"
 echo "  • ~/.tg-xray-bot/ (конфиг и база данных)"
 echo ""
@@ -27,19 +27,18 @@ echo ""
 read -rp "Продолжить? [y/N]: " confirm </dev/tty
 [[ "${confirm,,}" == "y" ]] || { echo "Отменено."; exit 0; }
 
-# PM2
-step "Остановка PM2-процесса"
-if command -v pm2 &>/dev/null; then
-  if pm2 describe tg-xray-bot &>/dev/null; then
-    pm2 stop tg-xray-bot
-    pm2 delete tg-xray-bot
-    pm2 save
-    log "PM2-процесс удалён"
-  else
-    warn "PM2-процесс tg-xray-bot не найден"
-  fi
+# systemd
+step "Остановка сервиса"
+if systemctl is-active tg-xray-bot &>/dev/null; then
+  systemctl stop tg-xray-bot
+fi
+if [[ -f /etc/systemd/system/tg-xray-bot.service ]]; then
+  systemctl disable tg-xray-bot
+  rm /etc/systemd/system/tg-xray-bot.service
+  systemctl daemon-reload
+  log "Сервис tg-xray-bot удалён"
 else
-  warn "PM2 не установлен"
+  warn "Сервис tg-xray-bot не найден"
 fi
 
 # xray-mgr
