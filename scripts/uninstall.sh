@@ -1,74 +1,77 @@
 #!/usr/bin/env bash
-# Удаление tg-xray-bot с сервера
-# xray и его конфиг НЕ трогаются — только бот и xray-mgr
+# Remove tg-xray-bot from server
+# xray and its config are NOT touched — only the bot and xray-mgr
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-log()  { echo -e "${GREEN}[✓]${NC} $*"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; }
-step() { echo -e "\n━━━ $*"; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
 
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║       tg-xray-bot uninstaller        ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
-echo "Будет удалено:"
-echo "  • systemd-сервис tg-xray-bot"
+echo "Will be removed:"
+echo "  • systemd service $SERVICE_NAME"
 echo "  • /usr/local/bin/xray-mgr"
-echo "  • ~/.tg-xray-bot/ (конфиг и база данных)"
+echo "  • $CONFIG_DIR (config and DB)"
+echo "  • $INSTALL_DIR (bot code)"
 echo ""
-echo -e "${YELLOW}xray и его конфиг НЕ будут затронуты.${NC}"
+echo -e "${YELLOW}xray and its config will NOT be affected.${NC}"
 echo ""
-read -rp "Продолжить? [y/N]: " confirm </dev/tty
-[[ "${confirm,,}" == "y" ]] || { echo "Отменено."; exit 0; }
+read -rp "Continue? [y/N]: " confirm </dev/tty
+[[ "${confirm,,}" == "y" ]] || { echo "Cancelled."; exit 0; }
 
-# systemd
-step "Остановка сервиса"
-if systemctl is-active tg-xray-bot &>/dev/null; then
-  systemctl stop tg-xray-bot
+# Service
+step "Stopping service"
+if systemctl is-active "$SERVICE_NAME" &>/dev/null; then
+  systemctl stop "$SERVICE_NAME"
 fi
-if [[ -f /etc/systemd/system/tg-xray-bot.service ]]; then
-  systemctl disable tg-xray-bot
-  rm /etc/systemd/system/tg-xray-bot.service
+if [[ -f /etc/systemd/system/${SERVICE_NAME}.service ]]; then
+  systemctl disable "$SERVICE_NAME"
+  rm /etc/systemd/system/${SERVICE_NAME}.service
   systemctl daemon-reload
-  log "Сервис tg-xray-bot удалён"
+  log "Service removed"
 else
-  warn "Сервис tg-xray-bot не найден"
+  warn "Service not found"
 fi
 
 # xray-mgr
-step "Удаление xray-mgr"
+step "Removing xray-mgr"
 if [[ -f /usr/local/bin/xray-mgr ]]; then
-  if [[ $EUID -eq 0 ]]; then
-    rm /usr/local/bin/xray-mgr
-    log "xray-mgr удалён"
-  else
-    warn "Нужен root для удаления xray-mgr: sudo rm /usr/local/bin/xray-mgr"
-  fi
+  rm /usr/local/bin/xray-mgr
+  log "xray-mgr removed"
 else
-  warn "xray-mgr не найден"
+  warn "xray-mgr not found"
 fi
 
-# Конфиг и БД
-step "Удаление конфига и базы данных"
-CONFIG_DIR="$HOME/.tg-xray-bot"
+# npm link
+step "Removing global link"
+if command -v tg-xray-bot &>/dev/null; then
+  npm unlink -g tg-xray-bot 2>/dev/null || true
+  log "tg-xray-bot link removed"
+fi
+
+# Config and DB
+step "Removing data"
 if [[ -d "$CONFIG_DIR" ]]; then
-  # Бэкап на всякий случай
   BACKUP="/tmp/tg-xray-bot-backup-$(date +%Y%m%d%H%M%S).tar.gz"
   tar -czf "$BACKUP" "$CONFIG_DIR"
-  log "Бэкап сохранён: $BACKUP"
+  log "Backup: $BACKUP"
   rm -rf "$CONFIG_DIR"
-  log "Удалено: $CONFIG_DIR"
+  log "$CONFIG_DIR removed"
 else
-  warn "$CONFIG_DIR не найден"
+  warn "$CONFIG_DIR not found"
+fi
+
+# Code
+step "Removing code"
+if [[ -d "$INSTALL_DIR" ]]; then
+  rm -rf "$INSTALL_DIR"
+  log "$INSTALL_DIR removed"
+else
+  warn "$INSTALL_DIR not found"
 fi
 
 echo ""
-log "Удаление завершено. Бот остановлен, xray продолжает работу."
-echo ""
-echo "Для повторной установки: bash scripts/install.sh"
+log "Uninstall complete. xray is still running."

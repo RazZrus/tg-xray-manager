@@ -12,8 +12,6 @@ function run(args: string[]): string {
     throw new Error(`xray-mgr не найден: ${result.error.message}`);
   }
 
-  const output = (result.stdout || '') + (result.stderr || '');
-
   if (result.status !== 0) {
     throw new Error(result.stderr?.trim() || `xray-mgr завершился с кодом ${result.status}`);
   }
@@ -72,17 +70,6 @@ export function getUserQrPath(name: string): string {
   }
 
   return tmpFile;
-}
-
-export function getUserStats(name: string): string {
-  return run(['stats', name]);
-}
-
-export function getBlockedStats(user?: string, period?: string): string {
-  const args = ['blocked'];
-  if (user) args.push(user);
-  if (period) args.push(period);
-  return run(args);
 }
 
 export function getXrayStatus(): string {

@@ -1,10 +1,9 @@
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
-import crypto from 'crypto';
 import fs from 'fs';
 import {
   findUser,
   findPromoCode,
-  markPromoCodeUsed,
+  redeemPromoCode,
   upsertUser,
   listAdmins,
 } from '../db/index.js';
@@ -102,12 +101,14 @@ export function registerUserHandlers(bot: Bot<Context>): void {
       return;
     }
 
+    let qrPath: string | undefined;
     try {
-      const qrPath = getUserQrPath(user.xray_username);
+      qrPath = getUserQrPath(user.xray_username);
       await ctx.replyWithPhoto(new InputFile(qrPath));
-      fs.unlinkSync(qrPath);
     } catch (e) {
       await ctx.reply(`Ошибка генерации QR: ${(e as Error).message}`);
+    } finally {
+      if (qrPath) try { fs.unlinkSync(qrPath); } catch {}
     }
   });
 
@@ -162,7 +163,10 @@ export function registerUserHandlers(bot: Bot<Context>): void {
           xray_username: xrayName,
         });
 
-        markPromoCodeUsed(pendingCode, telegramId);
+        if (!redeemPromoCode(pendingCode, telegramId)) {
+          await ctx.reply('Этот промокод уже использован.');
+          return;
+        }
 
         await ctx.reply(
           `✅ Аккаунт создан!\n\nИмя: \`${xrayName}\`\n\nСсылка для подключения:\n\`${link}\`\n\nИспользуй /qr для QR-кода или /me для статистики.`,

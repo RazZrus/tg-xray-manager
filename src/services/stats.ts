@@ -5,7 +5,22 @@ import { loadConfig } from '../config.js';
 
 const PROTO_PATH = path.join(__dirname, '../../proto/stats.proto');
 
-let cachedClient: grpc.Client | null = null;
+const packageDef = protoLoader.loadSync(PROTO_PATH, {
+  keepCase: true,
+  longs: String,
+  enums: String,
+  defaults: true,
+  oneofs: true,
+});
+
+const proto = grpc.loadPackageDefinition(packageDef) as Record<string, unknown>;
+const pkg = proto['xray'] as Record<string, unknown>;
+const app = pkg?.['app'] as Record<string, unknown>;
+const stats = app?.['stats'] as Record<string, unknown>;
+const command = stats?.['command'] as Record<string, unknown>;
+const StatsServiceConstructor = command?.['StatsService'] as grpc.ServiceClientConstructor;
+
+let cachedClient: StatsClient | null = null;
 let cachedHost: string | null = null;
 
 interface StatsClient extends grpc.Client {
@@ -20,31 +35,16 @@ function getStatsClient(): StatsClient {
   const host = `127.0.0.1:${config.statsPort}`;
 
   if (cachedClient && cachedHost === host) {
-    return cachedClient as StatsClient;
+    return cachedClient;
   }
 
   if (cachedClient) {
     cachedClient.close();
   }
 
-  const packageDef = protoLoader.loadSync(PROTO_PATH, {
-    keepCase: true,
-    longs: String,
-    enums: String,
-    defaults: true,
-    oneofs: true,
-  });
-
-  const proto = grpc.loadPackageDefinition(packageDef) as Record<string, unknown>;
-  const pkg = proto['xray'] as Record<string, unknown>;
-  const app = pkg?.['app'] as Record<string, unknown>;
-  const stats = app?.['stats'] as Record<string, unknown>;
-  const command = stats?.['command'] as Record<string, unknown>;
-  const StatsService = command?.['StatsService'] as grpc.ServiceClientConstructor;
-
-  cachedClient = new StatsService(host, grpc.credentials.createInsecure());
+  cachedClient = new StatsServiceConstructor(host, grpc.credentials.createInsecure()) as unknown as StatsClient;
   cachedHost = host;
-  return cachedClient as StatsClient;
+  return cachedClient;
 }
 
 interface Stat {

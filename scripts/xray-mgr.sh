@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# xray-mgr — управление пользователями xray VLESS+REALITY
+# xray-mgr — manage xray VLESS+REALITY users
 set -euo pipefail
 
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 XRAY_BIN="/usr/local/bin/xray"
 STATS_PORT="${XRAY_STATS_PORT:-10085}"
 
-# ─── Утилиты ─────────────────────────────────────────────────────────────────
+# ─── Utilities ──────────────────────────────────────────────────────────────
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 require_root() {
-  [[ $EUID -eq 0 ]] || die "Эта команда требует прав root (sudo xray-mgr ...)"
+  [[ $EUID -eq 0 ]] || die "This command requires root (sudo xray-mgr ...)"
 }
 
 require_jq() {
-  command -v jq &>/dev/null || die "Установите jq: apt-get install -y jq"
+  command -v jq &>/dev/null || die "Install jq: apt-get install -y jq"
 }
 
 require_qrencode() {
-  command -v qrencode &>/dev/null || die "Установите qrencode: apt-get install -y qrencode"
+  command -v qrencode &>/dev/null || die "Install qrencode: apt-get install -y qrencode"
 }
 
 require_grpcurl() {
   command -v grpcurl &>/dev/null || {
-    echo "grpcurl не найден, устанавливаю..." >&2
+    echo "grpcurl not found, installing..." >&2
     local ARCH
     ARCH=$(uname -m)
     local TAG
@@ -34,34 +34,33 @@ require_grpcurl() {
   }
 }
 
-# Получить значение из xray config по jq-пути
+# Get value from xray config by jq path
 cfg() { jq -r "$1" "$XRAY_CONFIG"; }
 
-# jq-путь к vless inbound (не api-in)
+# jq path to vless inbound (not api-in)
 VLESS='([.inbounds[] | select(.protocol == "vless")] | first)'
 
-# Получить IP/port для vless ссылки
+# Get IP/port for vless link
 get_server_ip() {
   curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
 get_xray_port() { cfg "${VLESS}.port // 443"; }
-get_public_key() { cfg "${VLESS}.streamSettings.realitySettings.privateKey" | $XRAY_BIN x25519 -i /dev/stdin 2>/dev/null | grep 'Public key' | awk '{print $NF}' || cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty"; }
 get_sni() { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
 get_short_id() { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
 
-# Найти пользователя по имени, вернуть его UUID
+# Find user by name, return UUID
 get_uuid() {
   local name="$1"
   jq -r --arg n "$name" "${VLESS}.settings.clients[] | select(.email == \$n) | .id" "$XRAY_CONFIG"
 }
 
-# Сформировать vless:// ссылку
+# Build vless:// link
 make_link() {
   local name="$1"
   local uuid
   uuid=$(get_uuid "$name")
-  [[ -n "$uuid" ]] || die "Пользователь '$name' не найден"
+  [[ -n "$uuid" ]] || die "User '$name' not found"
 
   local ip port sni short_id public_key
   ip=$(get_server_ip)
@@ -73,9 +72,9 @@ make_link() {
   echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${name}"
 }
 
-# ─── Stats API (gRPC) ─────────────────────────────────────────────────────────
+# ─── Stats API (gRPC) ───────────────────────────────────────────────────────
 
-# Запрос к Stats API через grpcurl
+# Query Stats API via grpcurl
 PROTO_DIR="/opt/tg-xray-manager/proto"
 
 stats_query() {
@@ -87,7 +86,7 @@ stats_query() {
     xray.app.stats.command.StatsService/QueryStats 2>/dev/null || echo '{}'
 }
 
-# Получить трафик пользователя (upload + download в байтах)
+# Get user traffic (upload + download in bytes)
 get_user_traffic() {
   local name="$1"
   local result
@@ -98,10 +97,10 @@ get_user_traffic() {
   echo "$up $down"
 }
 
-# Форматировать байты в человекочитаемый вид
+# Format bytes to human-readable
 format_bytes() {
   local bytes="${1:-0}"
-  # убираем всё нечисловое (grpcurl может вернуть строку)
+  # strip non-numeric chars (grpcurl may return a string)
   bytes=$(echo "$bytes" | tr -dc '0-9' || echo 0)
   bytes=${bytes:-0}
   if   (( bytes >= 1073741824 )); then printf "%.1f GB" "$(echo "scale=1; $bytes/1073741824" | bc)"
@@ -111,7 +110,7 @@ format_bytes() {
   fi
 }
 
-# ─── Команды ─────────────────────────────────────────────────────────────────
+# ─── Commands ───────────────────────────────────────────────────────────────
 
 cmd_list() {
   require_jq
@@ -121,7 +120,7 @@ cmd_list() {
   names=$(jq -r '[.inbounds[] | select(.protocol == "vless")] | first | .settings.clients[]?.email // empty' "$XRAY_CONFIG")
 
   if [[ -z "$names" ]]; then
-    echo "Пользователей нет."
+    echo "No users found."
     return
   fi
 
@@ -140,19 +139,16 @@ cmd_add() {
   require_jq
 
   local name="$1"
-  [[ -n "$name" ]] || die "Использование: xray-mgr add <name>"
-  [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || die "Имя должно содержать только латинские буквы, цифры, _ и -"
+  [[ -n "$name" ]] || die "Usage: xray-mgr add <name>"
+  [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || die "Name must contain only letters, digits, _ and -"
 
-  # Проверить что не существует
   local existing
   existing=$(get_uuid "$name")
-  [[ -z "$existing" ]] || die "Пользователь '$name' уже существует"
+  [[ -z "$existing" ]] || die "User '$name' already exists"
 
-  # Генерировать UUID
   local uuid
   uuid=$($XRAY_BIN uuid)
 
-  # Добавить в конфиг (в vless inbound)
   local tmp
   tmp=$(mktemp)
   jq --arg n "$name" --arg u "$uuid" \
@@ -161,10 +157,9 @@ cmd_add() {
   cp "$tmp" "$XRAY_CONFIG"
   rm "$tmp"
 
-  # Перезапустить xray
   systemctl restart xray
 
-  echo "Пользователь '$name' создан (UUID: $uuid)"
+  echo "User '$name' created (UUID: $uuid)"
   make_link "$name"
 }
 
@@ -173,28 +168,28 @@ cmd_del() {
   require_jq
 
   local name="$1"
-  [[ -n "$name" ]] || die "Использование: xray-mgr del <name>"
+  [[ -n "$name" ]] || die "Usage: xray-mgr del <name>"
 
   local existing
   existing=$(get_uuid "$name")
-  [[ -n "$existing" ]] || die "Пользователь '$name' не найден"
+  [[ -n "$existing" ]] || die "User '$name' not found"
 
   local tmp
   tmp=$(mktemp)
   jq --arg n "$name" \
-    '(.inbounds[] | select(.protocol == "vless") | .settings.clients) = [(.inbounds[] | select(.protocol == "vless") | .settings.clients[] | select(.email != $n))]' \
+    'del(.inbounds[] | select(.protocol == "vless") | .settings.clients[] | select(.email == $n))' \
     "$XRAY_CONFIG" > "$tmp"
   cp "$tmp" "$XRAY_CONFIG"
   rm "$tmp"
 
   systemctl restart xray
-  echo "Пользователь '$name' удалён"
+  echo "User '$name' deleted"
 }
 
 cmd_link() {
   require_jq
   local name="$1"
-  [[ -n "$name" ]] || die "Использование: xray-mgr link <name>"
+  [[ -n "$name" ]] || die "Usage: xray-mgr link <name>"
   make_link "$name"
 }
 
@@ -202,7 +197,7 @@ cmd_qr() {
   require_jq
   require_qrencode
   local name="$1"
-  [[ -n "$name" ]] || die "Использование: xray-mgr qr <name>"
+  [[ -n "$name" ]] || die "Usage: xray-mgr qr <name>"
   local link
   link=$(make_link "$name")
   echo "$link" | qrencode -t ANSIUTF8
@@ -215,17 +210,17 @@ cmd_stats() {
   require_grpcurl
 
   local name="$1"
-  [[ -n "$name" ]] || die "Использование: xray-mgr stats <name>"
+  [[ -n "$name" ]] || die "Usage: xray-mgr stats <name>"
 
   local existing
   existing=$(get_uuid "$name")
-  [[ -n "$existing" ]] || die "Пользователь '$name' не найден"
+  [[ -n "$existing" ]] || die "User '$name' not found"
 
   read -r up down <<< "$(get_user_traffic "$name")"
-  echo "Пользователь: $name"
-  echo "  Исходящий:  $(format_bytes "$up")"
-  echo "  Входящий:   $(format_bytes "$down")"
-  echo "  Итого:      $(format_bytes "$(( ${up:-0} + ${down:-0} ))")"
+  echo "User: $name"
+  echo "  Upload:    $(format_bytes "$up")"
+  echo "  Download:  $(format_bytes "$down")"
+  echo "  Total:     $(format_bytes "$(( ${up:-0} + ${down:-0} ))")"
 }
 
 cmd_blocked() {
@@ -234,11 +229,9 @@ cmd_blocked() {
   local user="${1:-}"
   local period="${2:-day}"
 
-  # Считаем из логов xray
   local log_file
   log_file=$(cfg '.log.access // "/var/log/xray/access.log"')
   [[ -f "$log_file" ]] || {
-    # Попробуем journalctl
     local since
     case "$period" in
       hour)  since="1 hour ago" ;;
@@ -249,20 +242,20 @@ cmd_blocked() {
       *)     since="1 day ago" ;;
     esac
 
-    echo "Заблокированные запросы ($period):"
+    echo "Blocked requests ($period):"
     if [[ -n "$user" ]]; then
-      journalctl -u xray --since="$since" 2>/dev/null | grep -i "blocked\|reject" | grep "$user" | wc -l | xargs echo "  Количество:"
+      journalctl -u xray --since="$since" 2>/dev/null | grep -i "blocked\|reject" | grep "$user" | wc -l | xargs echo "  Count:"
     else
-      journalctl -u xray --since="$since" 2>/dev/null | grep -i "blocked\|reject" | wc -l | xargs echo "  Всего заблокировано:"
+      journalctl -u xray --since="$since" 2>/dev/null | grep -i "blocked\|reject" | wc -l | xargs echo "  Total blocked:"
     fi
     return
   }
 
-  echo "Заблокированные запросы ($period) из $log_file:"
+  echo "Blocked requests ($period) from $log_file:"
   if [[ -n "$user" ]]; then
-    grep "rejected\|blocked" "$log_file" | grep "$user" | wc -l | xargs echo "  Пользователь $user:"
+    grep "rejected\|blocked" "$log_file" | grep "$user" | wc -l | xargs echo "  User $user:"
   else
-    grep "rejected\|blocked" "$log_file" | wc -l | xargs echo "  Всего:"
+    grep "rejected\|blocked" "$log_file" | wc -l | xargs echo "  Total:"
   fi
 }
 
@@ -273,25 +266,25 @@ cmd_status() {
 cmd_restart() {
   require_root
   systemctl restart xray
-  echo "xray перезапущен"
+  echo "xray restarted"
 }
 
-# ─── Точка входа ─────────────────────────────────────────────────────────────
+# ─── Entry point ────────────────────────────────────────────────────────────
 
 usage() {
   cat <<EOF
-Использование: xray-mgr <команда> [аргументы]
+Usage: xray-mgr <command> [args]
 
-Команды:
-  list                        Список пользователей с трафиком
-  add <name>                  Добавить пользователя (требует root)
-  del <name>                  Удалить пользователя (требует root)
-  link <name>                 Получить vless:// ссылку
-  qr <name>                   QR-код для подключения
-  stats <name>                Трафик конкретного пользователя
-  blocked [user] [period]     Статистика блокировок (period: hour/day/week/month/year)
-  status                      Статус xray сервиса
-  restart                     Перезапустить xray (требует root)
+Commands:
+  list                        List users with traffic stats
+  add <name>                  Add user (requires root)
+  del <name>                  Delete user (requires root)
+  link <name>                 Get vless:// link
+  qr <name>                   QR code for connection
+  stats <name>                Traffic for a specific user
+  blocked [user] [period]     Block stats (period: hour/day/week/month/year)
+  status                      xray service status
+  restart                     Restart xray (requires root)
 EOF
 }
 

@@ -54,6 +54,8 @@ let stmts: {
   createPromoCode: Database.Statement;
   findPromoCode: Database.Statement;
   markPromoCodeUsed: Database.Statement;
+  redeemPromoCode: Database.Statement;
+  deletePromoCode: Database.Statement;
   listPromoCodes: Database.Statement;
 };
 
@@ -78,6 +80,8 @@ function initStatements(db: Database.Database): void {
     createPromoCode: db.prepare('INSERT INTO promo_codes (code, created_by, created_at) VALUES (?, ?, ?)'),
     findPromoCode: db.prepare('SELECT * FROM promo_codes WHERE code = ?'),
     markPromoCodeUsed: db.prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ?'),
+    redeemPromoCode: db.prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ? AND used_by IS NULL'),
+    deletePromoCode: db.prepare('DELETE FROM promo_codes WHERE code = ?'),
     listPromoCodes: db.prepare('SELECT * FROM promo_codes ORDER BY created_at DESC'),
   };
 }
@@ -156,6 +160,18 @@ export function findPromoCode(code: string): PromoCode | undefined {
 export function markPromoCodeUsed(code: string, usedBy: number): void {
   getDb();
   stmts.markPromoCodeUsed.run(usedBy, Date.now(), code);
+}
+
+/** Атомарно использовать промокод. Возвращает true если успешно. */
+export function redeemPromoCode(code: string, usedBy: number): boolean {
+  getDb();
+  const result = stmts.redeemPromoCode.run(usedBy, Date.now(), code);
+  return result.changes > 0;
+}
+
+export function deletePromoCode(code: string): void {
+  getDb();
+  stmts.deletePromoCode.run(code);
 }
 
 export function listPromoCodes(): PromoCode[] {

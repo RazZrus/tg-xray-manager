@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tg-xray-manager installer
 #
-# Установка одной командой:
+# One-line install:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/RazZrus/tg-xray-manager/main/scripts/install.sh)
 set -euo pipefail
 
@@ -21,87 +21,147 @@ error() { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 step()  { echo -e "\n${BLUE}━━━${NC} $*"; }
 
 require_root() {
-  [[ $EUID -eq 0 ]] || error "Запустите от root: sudo bash ..."
+  [[ $EUID -eq 0 ]] || error "Run as root: sudo bash ..."
 }
 
-# ─── whiptail ────────────────────────────────────────────────────────────────
+# ─── Interactive UI ─────────────────────────────────────────────────────────
 
-ensure_whiptail() {
-  command -v whiptail &>/dev/null || apt-get install -y whiptail
+DIM='\033[2m'
+BOLD='\033[1m'
+CYAN='\033[0;36m'
+
+# Arrow-key selector: select_option <result_var> <title> <label1> <label2> ...
+# Writes the 0-based index into result_var
+select_option() {
+  local _var="$1" title="$2"; shift 2
+  local options=("$@")
+  local count=${#options[@]}
+  local selected=0
+
+  # Hide cursor
+  printf '\e[?25l' >/dev/tty
+
+  # Restore cursor on return
+  trap 'printf "\e[?25h" >/dev/tty' RETURN
+
+  # Initial render
+  printf '\n  %b%s%b\n\n' "$BOLD" "$title" "$NC" >/dev/tty
+  for i in "${!options[@]}"; do
+    if (( i == selected )); then
+      printf '  %b❯ %s%b\n' "$CYAN" "${options[$i]}" "$NC" >/dev/tty
+    else
+      printf '    %b%s%b\n' "$DIM" "${options[$i]}" "$NC" >/dev/tty
+    fi
+  done
+
+  while true; do
+    local key
+    IFS= read -rsn1 key </dev/tty
+
+    if [[ "$key" == $'\x1b' ]]; then
+      read -rsn2 rest </dev/tty
+      key+="$rest"
+    fi
+
+    case "$key" in
+      $'\x1b[A'|k) # Up
+        (( selected > 0 )) && (( selected-- ))
+        ;;
+      $'\x1b[B'|j) # Down
+        (( selected < count - 1 )) && (( selected++ ))
+        ;;
+      '') # Enter
+        break
+        ;;
+      *) continue ;;
+    esac
+
+    # Redraw: move up count lines
+    printf '\e[%dA' "$count" >/dev/tty
+    for i in "${!options[@]}"; do
+      printf '\r\e[2K' >/dev/tty
+      if (( i == selected )); then
+        printf '  %b❯ %s%b\n' "$CYAN" "${options[$i]}" "$NC" >/dev/tty
+      else
+        printf '    %b%s%b\n' "$DIM" "${options[$i]}" "$NC" >/dev/tty
+      fi
+    done
+  done
+
+  echo "" >/dev/tty
+  eval "$_var=$selected"
 }
 
-# Меню со стрелками: menu <title> <item1> <desc1> <item2> <desc2> ...
-# Возвращает выбранный item в stdout
-menu() {
-  local title="$1"; shift
-  local items=("$@")
-  whiptail --title "tg-xray-manager installer" \
-           --menu "$title" 15 60 "${#items[@]}" \
-           "${items[@]}" \
-           3>&1 1>&2 2>&3 3>&- </dev/tty
+# Text input with default: prompt_input <result_var> <label> [default]
+prompt_input() {
+  local _var="$1" label="$2" default="${3:-}"
+  local value
+
+  if [[ -n "$default" ]]; then
+    printf '  %b%s%b %b(%s)%b: ' "$BOLD" "$label" "$NC" "$DIM" "$default" "$NC" >/dev/tty
+  else
+    printf '  %b%s%b: ' "$BOLD" "$label" "$NC" >/dev/tty
+  fi
+
+  IFS= read -r value </dev/tty
+  value="${value:-$default}"
+  eval "$_var=\$value"
 }
 
-# Поле ввода: inputbox <title> <default>
-inputbox() {
-  local title="$1" default="${2:-}"
-  whiptail --title "tg-xray-manager installer" \
-           --inputbox "$title" 10 60 "$default" \
-           3>&1 1>&2 2>&3 3>&- </dev/tty
-}
-
-# Диалог подтверждения
+# Confirmation: confirm <message> → return 0 (yes) / 1 (no)
 confirm() {
-  local msg="$1"
-  whiptail --title "tg-xray-manager installer" \
-           --yesno "$msg" 10 60 \
-           </dev/tty
+  local msg="$1" reply
+  printf '  %s %b[y/N]%b: ' "$msg" "$DIM" "$NC" >/dev/tty
+  IFS= read -rn1 reply </dev/tty
+  echo "" >/dev/tty
+  [[ "${reply,,}" == "y" ]]
 }
 
-# ─── Определение ОС ──────────────────────────────────────────────────────────
+# ─── OS detection ───────────────────────────────────────────────────────────
 
 detect_os() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
   else
-    error "Не удалось определить ОС. Поддерживается Ubuntu 22.04+"
+    error "Could not detect OS. Ubuntu 22.04+ is supported"
   fi
   if [[ "${ID:-}" != "ubuntu" ]] && [[ "${ID:-}" != "debian" ]]; then
-    warn "Протестировано на Ubuntu 22.04+. Текущая ОС: ${ID:-unknown} ${VERSION_ID:-}"
+    warn "Tested on Ubuntu 22.04+. Current OS: ${ID:-unknown} ${VERSION_ID:-}"
   fi
 }
 
-# ─── Node.js ─────────────────────────────────────────────────────────────────
+# ─── Node.js ────────────────────────────────────────────────────────────────
 
 install_nodejs() {
   if command -v node &>/dev/null; then
     local ver
     ver=$(node --version | sed 's/v//' | cut -d. -f1)
     if (( ver >= 20 )); then
-      log "Node.js $(node --version) уже установлен"
+      log "Node.js $(node --version) already installed"
       return
     fi
-    warn "Node.js $(node --version) устарел, обновляю..."
+    warn "Node.js $(node --version) is outdated, upgrading..."
   fi
-  step "Установка Node.js 20 LTS"
+  step "Installing Node.js 20 LTS"
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
-  log "Node.js $(node --version) установлен"
+  log "Node.js $(node --version) installed"
 }
 
-# ─── xray-core ───────────────────────────────────────────────────────────────
+# ─── xray-core ──────────────────────────────────────────────────────────────
 
 install_xray() {
-  step "Установка xray-core"
+  step "Installing xray-core"
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-  log "xray установлен"
+  log "xray installed"
 }
 
-# ─── Генерация конфига xray с нуля ───────────────────────────────────────────
+# ─── Generate xray config from scratch ──────────────────────────────────────
 
 generate_xray_config() {
   local server_ip="$1" port="${2:-443}" sni="${3:-www.microsoft.com}"
 
-  step "Генерация xray конфига (VLESS+REALITY+TCP+gRPC Stats)"
+  step "Generating xray config (VLESS+REALITY+TCP+gRPC Stats)"
 
   local keypair private_key public_key short_id
   keypair=$(xray x25519)
@@ -172,19 +232,19 @@ generate_xray_config() {
   }
 }
 EOF
-  log "Конфиг сгенерирован (public key: ${public_key})"
+  log "Config generated (public key: ${public_key})"
 }
 
-# ─── Патч существующего конфига для Stats API ────────────────────────────────
+# ─── Patch existing config for Stats API ────────────────────────────────────
 
 patch_xray_config_for_stats() {
   local config="/usr/local/etc/xray/config.json"
-  [[ -f "$config" ]] || error "Конфиг xray не найден: $config"
+  [[ -f "$config" ]] || error "xray config not found: $config"
 
-  step "Добавление Stats API в конфиг xray"
+  step "Adding Stats API to xray config"
 
   if jq -e '.stats' "$config" &>/dev/null; then
-    log "Stats API уже настроен"
+    log "Stats API already configured"
     return
   fi
 
@@ -211,45 +271,40 @@ patch_xray_config_for_stats() {
       }] + (.routing.rules // []))
   ' "$config" > "$tmp"
   cp "$tmp" "$config" && rm "$tmp"
-  log "Stats API добавлен в конфиг"
+  log "Stats API added to config"
 }
 
-# ─── xray-mgr ────────────────────────────────────────────────────────────────
+# ─── Dependencies ───────────────────────────────────────────────────────────
+
+install_deps() {
+  step "Installing system dependencies"
+  apt-get install -y jq qrencode bc curl git
+  log "Dependencies installed"
+}
+
+# ─── xray-mgr ──────────────────────────────────────────────────────────────
 
 install_xray_mgr() {
-  step "Установка xray-mgr"
-  apt-get install -y jq qrencode bc curl
+  step "Installing xray-mgr"
 
-  # Если запущено из клонированного репо — берём локальный файл,
-  # иначе (curl pipe) — скачиваем с GitHub напрямую
-  local src=""
-  local script_src="${BASH_SOURCE[0]:-}"
-  if [[ -n "$script_src" && "$script_src" != /dev/fd/* && "$script_src" != /proc/* ]]; then
-    local script_dir
-    script_dir="$(cd "$(dirname "$script_src")" && pwd)"
-    [[ -f "${script_dir}/xray-mgr.sh" ]] && src="${script_dir}/xray-mgr.sh"
-  fi
-  # Также проверяем, не клонировали ли репо уже в INSTALL_DIR
-  [[ -z "$src" && -f "${INSTALL_DIR}/scripts/xray-mgr.sh" ]] && src="${INSTALL_DIR}/scripts/xray-mgr.sh"
-
-  if [[ -n "$src" ]]; then
-    cp "$src" /usr/local/bin/xray-mgr
+  # Repo already cloned — use local file
+  if [[ -f "${INSTALL_DIR}/scripts/xray-mgr.sh" ]]; then
+    cp "${INSTALL_DIR}/scripts/xray-mgr.sh" /usr/local/bin/xray-mgr
   else
     curl -fsSL "$XRAY_MGR_URL" -o /usr/local/bin/xray-mgr
   fi
 
   chmod +x /usr/local/bin/xray-mgr
-  log "xray-mgr установлен → /usr/local/bin/xray-mgr"
+  log "xray-mgr installed → /usr/local/bin/xray-mgr"
 }
 
-# ─── Бот ─────────────────────────────────────────────────────────────────────
+# ─── Bot ────────────────────────────────────────────────────────────────────
 
 install_bot() {
-  step "Установка tg-xray-manager из GitHub"
-  command -v git &>/dev/null || apt-get install -y git
+  step "Installing tg-xray-manager from GitHub"
 
   if [[ -d "$INSTALL_DIR/.git" ]]; then
-    warn "$INSTALL_DIR уже существует — обновляю"
+    warn "$INSTALL_DIR already exists — updating"
     git -C "$INSTALL_DIR" fetch origin main
     git -C "$INSTALL_DIR" reset --hard origin/main
   else
@@ -257,15 +312,16 @@ install_bot() {
   fi
 
   cd "$INSTALL_DIR"
-  npm install --omit=dev
+  npm install
+  npm run build
   npm link
-  log "tg-xray-manager установлен в $INSTALL_DIR"
+  log "tg-xray-manager installed in $INSTALL_DIR"
 }
 
-# ─── systemd-сервис ──────────────────────────────────────────────────────────
+# ─── systemd service ────────────────────────────────────────────────────────
 
 setup_systemd_service() {
-  step "Настройка systemd-сервиса tg-xray-bot"
+  step "Setting up systemd service"
 
   cat > /etc/systemd/system/tg-xray-bot.service <<EOF
 [Unit]
@@ -286,30 +342,30 @@ EOF
 
   systemctl daemon-reload
   systemctl enable tg-xray-bot
-  log "Сервис tg-xray-bot создан и включён в автозапуск"
+  log "Service tg-xray-bot created and enabled"
 }
 
-# ─── Настройка бота (конфиг) ──────────────────────────────────────────────────
+# ─── Bot configuration ──────────────────────────────────────────────────────
 
 configure_bot() {
   local config_dir="/root/.tg-xray-bot"
   local config_path="${config_dir}/config.json"
 
   if [[ -f "$config_path" ]]; then
-    if ! confirm "Конфиг бота уже существует. Перенастроить?"; then
-      log "Используется существующий конфиг"
+    if ! confirm "Bot config already exists. Reconfigure?"; then
+      log "Using existing config"
       return
     fi
   fi
 
-  step "Настройка Telegram-бота"
+  step "Configuring Telegram bot"
 
   local bot_token admin_id stats_port
-  bot_token=$(inputbox "Telegram Bot Token (от @BotFather)" "")
-  admin_id=$(inputbox "Ваш Telegram ID (узнать у @userinfobot)" "")
-  stats_port=$(inputbox "Порт gRPC Stats API xray" "10085")
+  prompt_input bot_token  "Bot Token (from @BotFather)" ""
+  prompt_input admin_id   "Your Telegram ID (get it from @userinfobot)" ""
+  prompt_input stats_port "gRPC Stats API port" "10085"
 
-  # Определяем server_ip и xray_port из конфига xray если есть
+  # Detect server_ip and xray_port from xray config if available
   local server_ip xray_port sni
   if [[ -f /usr/local/etc/xray/config.json ]]; then
     xray_port=$(jq -r '[.inbounds[] | select(.protocol == "vless")][0].port // 443' /usr/local/etc/xray/config.json)
@@ -332,49 +388,52 @@ configure_bot() {
 }
 EOF
   chmod 600 "$config_path"
-  log "Конфиг бота сохранён: $config_path"
+  log "Bot config saved: $config_path"
 }
 
-# ─── Главное меню ────────────────────────────────────────────────────────────
+# ─── Main ───────────────────────────────────────────────────────────────────
 
 main() {
   require_root
   detect_os
-  ensure_whiptail
 
-  # Выбор режима
+  echo ""
+  echo -e "${BOLD}  tg-xray-manager installer${NC}"
+  echo ""
+
   local mode
-  mode=$(menu \
-    "Выберите режим установки:" \
-    "A" "Только бот + xray-mgr  (xray уже установлен)" \
-    "B" "Полная установка с нуля (xray + конфиг + бот)")
+  select_option mode "Installation mode:" \
+    "Bot + xray-mgr only  (xray already installed)" \
+    "Full install from scratch  (xray + config + bot)"
 
   case "$mode" in
-    A)
+    0)
+      install_deps
       install_nodejs
+      install_bot
       install_xray_mgr
       patch_xray_config_for_stats
       systemctl restart xray
-      install_bot
       configure_bot
       setup_systemd_service
       systemctl start tg-xray-bot
       ;;
-    B)
+    1)
       local auto_ip
       auto_ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
 
       local server_ip xray_port sni
-      server_ip=$(inputbox "Внешний IP сервера" "$auto_ip")
-      xray_port=$(inputbox "Порт xray" "443")
-      sni=$(inputbox "SNI (домен для маскировки)" "www.microsoft.com")
+      prompt_input server_ip "Server public IP" "$auto_ip"
+      prompt_input xray_port "xray port" "443"
+      prompt_input sni       "SNI (masquerade domain)" "www.microsoft.com"
 
+      install_deps
       install_nodejs
       install_xray
       generate_xray_config "$server_ip" "$xray_port" "$sni"
       systemctl enable --now xray
-      install_xray_mgr
       install_bot
+      install_xray_mgr
       configure_bot
       setup_systemd_service
       systemctl start tg-xray-bot
@@ -383,12 +442,13 @@ main() {
 
   clear
   echo ""
-  log "Установка завершена! Бот запущен."
+  log "Installation complete! Bot is running."
   echo ""
-  echo "  Управление:    systemctl {start|stop|restart|status} tg-xray-bot"
-  echo "  Логи:          journalctl -u tg-xray-bot -f"
-  echo "  Обновление:    bash ${INSTALL_DIR}/scripts/update.sh"
-  echo "  Удаление:      bash ${INSTALL_DIR}/scripts/uninstall.sh"
+  echo "  Manage:     systemctl {start|stop|restart} tg-xray-bot"
+  echo "  Status:     bash ${INSTALL_DIR}/scripts/status.sh"
+  echo "  Logs:       bash ${INSTALL_DIR}/scripts/logs.sh [lines] [bot|xray|all]"
+  echo "  Update:     bash ${INSTALL_DIR}/scripts/update.sh"
+  echo "  Uninstall:  bash ${INSTALL_DIR}/scripts/uninstall.sh"
   echo ""
 }
 

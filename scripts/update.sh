@@ -1,52 +1,40 @@
 #!/usr/bin/env bash
-# Обновление tg-xray-bot из GitHub
+# Update tg-xray-bot from GitHub
 set -euo pipefail
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
 
-log()  { echo -e "${GREEN}[✓]${NC} $*"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; }
-step() { echo -e "\n━━━ $*"; }
+BOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+step "Updating tg-xray-bot"
+echo "Directory: $BOT_DIR"
 
-step "Обновление tg-xray-bot"
-echo "Директория: $BOT_DIR"
-
-# 1. Получаем последние изменения
-step "git pull"
+step "Fetching updates"
 cd "$BOT_DIR"
 git fetch origin main
 git reset --hard origin/main
-log "Код обновлён"
+log "Code updated"
 
-# 2. Устанавливаем зависимости (dist/ уже в репо, сборка не нужна)
-step "npm install"
-npm install --omit=dev
-log "Зависимости обновлены"
+step "Building"
+npm install
+npm run build
+log "Build complete"
 
-# 4. Обновляем xray-mgr если он изменился
-step "Обновление xray-mgr"
-if [[ -f "$BOT_DIR/scripts/xray-mgr.sh" ]]; then
-  if [[ $EUID -eq 0 ]]; then
-    cp "$BOT_DIR/scripts/xray-mgr.sh" /usr/local/bin/xray-mgr
-    chmod +x /usr/local/bin/xray-mgr
-    log "xray-mgr обновлён"
-  else
-    warn "Для обновления xray-mgr нужен root: sudo cp $BOT_DIR/scripts/xray-mgr.sh /usr/local/bin/xray-mgr"
-  fi
+step "Updating xray-mgr"
+if [[ -f "$BOT_DIR/scripts/xray-mgr.sh" && $EUID -eq 0 ]]; then
+  cp "$BOT_DIR/scripts/xray-mgr.sh" /usr/local/bin/xray-mgr
+  chmod +x /usr/local/bin/xray-mgr
+  log "xray-mgr updated"
 fi
 
-# 5. Перезапуск сервиса
-step "Перезапуск tg-xray-bot"
-if systemctl is-active tg-xray-bot &>/dev/null; then
-  systemctl restart tg-xray-bot
-  log "Бот перезапущен"
+step "Restarting"
+if systemctl is-active "$SERVICE_NAME" &>/dev/null; then
+  systemctl restart "$SERVICE_NAME"
+  log "Bot restarted"
 else
-  warn "Сервис tg-xray-bot не запущен. Запустите: systemctl start tg-xray-bot"
+  warn "Service not running. Start it: systemctl start $SERVICE_NAME"
 fi
 
 echo ""
-log "Обновление завершено"
+log "Update complete"

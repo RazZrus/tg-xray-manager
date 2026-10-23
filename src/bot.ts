@@ -7,17 +7,29 @@ export function createBot(): Bot<Context> {
   const config = loadConfig();
   const bot = new Bot<Context>(config.botToken);
 
-  // Регистрация команд
-  bot.api.setMyCommands([
+  // Команды для обычных пользователей
+  const userCommands = [
     { command: 'start', description: 'Начать / главное меню' },
     { command: 'register', description: 'Зарегистрироваться по промокоду' },
     { command: 'me', description: 'Мой трафик' },
     { command: 'link', description: 'Ссылка для подключения' },
     { command: 'qr', description: 'QR-код для подключения' },
+  ];
+
+  const adminCommands = [
+    ...userCommands,
     { command: 'admin', description: 'Панель администратора' },
-    { command: 'shell', description: 'Выполнить команду (только админы)' },
-    { command: 'deluser', description: 'Удалить пользователя (только админы)' },
-  ]).catch(console.error);
+  ];
+
+  // Общий список — без /admin
+  bot.api.setMyCommands(userCommands).catch(console.error);
+
+  // Для каждого админа — с /admin
+  for (const adminId of config.adminIds) {
+    bot.api.setMyCommands(adminCommands, {
+      scope: { type: 'chat', chat_id: adminId },
+    }).catch(console.error);
+  }
 
   registerUserHandlers(bot);
   registerAdminHandlers(bot);

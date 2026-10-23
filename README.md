@@ -1,72 +1,129 @@
 # tg-xray-manager
 
-Telegram-бот для управления VPN-сервером на базе [Xray](https://github.com/XTLS/Xray-core) (VLESS + REALITY).
+Telegram bot for managing a VPN server powered by [Xray](https://github.com/XTLS/Xray-core) (VLESS + REALITY).
 
-## Возможности
+## Features
 
-**Для пользователей:**
-- Регистрация по одноразовому промокоду
-- Просмотр своего трафика (`/me`)
-- Получение ссылки для подключения (`/link`)
-- QR-код для подключения (`/qr`)
+**For users:**
+- Register with a one-time promo code
+- View your traffic stats (`/me`)
+- Get a connection link (`/link`)
+- QR code for connecting (`/qr`)
 
-**Для администраторов:**
-- Список всех пользователей с трафиком
-- Добавление / удаление пользователей
-- Генерация промокодов
-- Статус и перезапуск xray
-- Shell-команды прямо из Telegram (`/shell`)
-- Перезагрузка и выключение сервера
+**For admins (Reply Keyboard panel via `/admin`):**
+- **Users** — list all users with traffic, add / delete users
+- **Promo** — create, list, delete promo codes
+- **Server** — xray status, restart, reboot / shutdown
+- **Terminal** — run shell commands directly from Telegram
 
-## Установка
+## Installation
 
-Требования: Ubuntu 22.04+, root-доступ.
+Requirements: Ubuntu 22.04+ (or Debian), root access.
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/RazZrus/tg-xray-manager/main/scripts/install.sh)
 ```
 
-Скрипт предложит два режима:
+The installer uses an interactive arrow-key menu:
 
-- **A** — xray уже установлен, ставим только бота и xray-mgr
-- **B** — полная установка с нуля (xray + VLESS/REALITY конфиг + бот)
+```
+  tg-xray-manager installer
 
-После установки запустится интерактивный wizard — введи токен бота и свой Telegram ID.
+  Installation mode:
 
-## Регистрация пользователей
+  ❯ Bot + xray-mgr only  (xray already installed)
+    Full install from scratch  (xray + config + bot)
+```
 
-1. Админ генерирует промокод: `/admin` → **Создать промокод**
-2. Отправляет код пользователю
-3. Пользователь пишет боту `/register`, вводит код и выбирает имя
-4. Бот создаёт VPN-аккаунт и присылает ссылку для подключения
+- **Option 1** — xray is already running, install only the bot and xray-mgr
+- **Option 2** — full setup from scratch (xray + VLESS/REALITY config + bot)
 
-## Клиентские приложения
+After installation the wizard will prompt for the bot token and your Telegram ID.
 
-| Платформа | Приложение |
-|-----------|-----------|
+## Configuration
+
+Bot config is stored at `~/.tg-xray-bot/config.json`:
+
+```json
+{
+  "botToken": "123456:ABC-DEF...",
+  "adminIds": [483443210],
+  "serverIp": "1.2.3.4",
+  "xrayPort": 443,
+  "sni": "www.microsoft.com",
+  "statsPort": 10085
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `botToken` | Telegram bot token from [@BotFather](https://t.me/BotFather) |
+| `adminIds` | Array of Telegram user IDs with admin access |
+| `serverIp` | Server public IP (auto-detected during install) |
+| `xrayPort` | xray VLESS listening port |
+| `sni` | SNI domain for REALITY masquerade |
+| `statsPort` | xray gRPC Stats API port |
+
+## User registration
+
+1. Admin creates a promo code: `/admin` → **Promo** → **Create**
+2. Send the code to the user
+3. User sends `/register` to the bot, enters the code and picks a username
+4. Bot creates a VPN account and returns a connection link
+
+## Client apps
+
+| Platform | App |
+|----------|-----|
 | Android | v2rayNG, Nekobox |
 | iOS | Streisand, Shadowrocket, V2Box |
 | Windows | Nekoray, v2rayN |
 | macOS | Nekoray, V2Box |
 
-## Обновление
+## Management scripts
+
+All scripts are located in `/opt/tg-xray-manager/scripts/`.
+
+| Command | Description |
+|---------|-------------|
+| `bash scripts/update.sh` | Pull latest code, rebuild, restart bot |
+| `bash scripts/uninstall.sh` | Remove bot and xray-mgr (xray untouched) |
+| `bash scripts/status.sh` | Show bot & xray status, config, DB info |
+| `bash scripts/logs.sh [lines] [bot\|xray\|all]` | View service logs |
+
+### systemd
 
 ```bash
-bash /opt/tg-xray-manager/scripts/update.sh
+systemctl start tg-xray-bot      # start
+systemctl stop tg-xray-bot       # stop
+systemctl restart tg-xray-bot    # restart
+systemctl status tg-xray-bot     # status
+journalctl -u tg-xray-bot -f     # follow logs
 ```
 
-## Удаление
+### xray-mgr CLI
+
+Installed globally as `/usr/local/bin/xray-mgr`:
 
 ```bash
-bash /opt/tg-xray-manager/scripts/uninstall.sh
+xray-mgr list                    # list users with traffic
+xray-mgr add <name>              # add user
+xray-mgr del <name>              # delete user
+xray-mgr link <name>             # get vless:// link
+xray-mgr qr <name>               # show QR code
+xray-mgr stats <name>            # user traffic details
+xray-mgr status                  # xray service status
+xray-mgr restart                 # restart xray
 ```
 
-Xray и его конфиг не затрагиваются — удаляется только бот.
+## Tech stack
 
-## Стек
-
-- [Grammy](https://grammy.dev/) — Telegram Bot Framework
+- [grammY](https://grammy.dev/) — Telegram Bot Framework
 - TypeScript + Node.js 20
 - SQLite (better-sqlite3)
-- xray Stats gRPC API — статистика трафика
-- PM2 — управление процессом
+- xray gRPC Stats API — traffic monitoring
+- systemd — process management
+
+## License
+
+MIT
