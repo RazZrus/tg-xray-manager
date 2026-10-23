@@ -37,21 +37,23 @@ require_grpcurl() {
 # Получить значение из xray config по jq-пути
 cfg() { jq -r "$1" "$XRAY_CONFIG"; }
 
+# jq-путь к vless inbound (не api-in)
+VLESS='([.inbounds[] | select(.protocol == "vless")] | first)'
+
 # Получить IP/port для vless ссылки
 get_server_ip() {
-  # Сначала пробуем внешний IP
   curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
-get_xray_port() { cfg '.inbounds[0].port // 443'; }
-get_public_key() { cfg '.inbounds[0].streamSettings.realitySettings.privateKey' | $XRAY_BIN x25519 -i /dev/stdin 2>/dev/null | grep 'Public key' | awk '{print $NF}' || cfg '.inbounds[0].streamSettings.realitySettings.publicKey // empty'; }
-get_sni() { cfg '.inbounds[0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"'; }
-get_short_id() { cfg '.inbounds[0].streamSettings.realitySettings.shortIds[0] // ""'; }
+get_xray_port() { cfg "${VLESS}.port // 443"; }
+get_public_key() { cfg "${VLESS}.streamSettings.realitySettings.privateKey" | $XRAY_BIN x25519 -i /dev/stdin 2>/dev/null | grep 'Public key' | awk '{print $NF}' || cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty"; }
+get_sni() { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
+get_short_id() { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
 
 # Найти пользователя по имени, вернуть его UUID
 get_uuid() {
   local name="$1"
-  jq -r --arg n "$name" '.inbounds[0].settings.clients[] | select(.email == $n) | .id' "$XRAY_CONFIG"
+  jq -r --arg n "$name" "${VLESS}.settings.clients[] | select(.email == \$n) | .id" "$XRAY_CONFIG"
 }
 
 # Сформировать vless:// ссылку
@@ -66,8 +68,7 @@ make_link() {
   port=$(get_xray_port)
   sni=$(get_sni)
   short_id=$(get_short_id)
-  # public key берём из конфига напрямую
-  public_key=$(cfg '.inbounds[0].streamSettings.realitySettings.publicKey // empty')
+  public_key=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
 
   echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${name}"
 }
@@ -114,12 +115,18 @@ cmd_list() {
   require_grpcurl
 
   local names
-  names=$(jq -r '.inbounds[0].settings.clients[].email' "$XRAY_CONFIG")
+  names=$(jq -r '[.inbounds[] | select(.protocol == "vless")] | first | .settings.clients[]?.email // empty' "$XRAY_CONFIG")
+
+  if [[ -z "$names" ]]; then
+    echo "Пользователей нет."
+    return
+  fi
 
   printf "%-20s %12s %12s\n" "USER" "UPLOAD" "DOWNLOAD"
   printf "%-20s %12s %12s\n" "----" "------" "--------"
 
   while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
     read -r up down <<< "$(get_user_traffic "$name")"
     printf "%-20s %12s %12s\n" "$name" "$(format_bytes "$up")" "$(format_bytes "$down")"
   done <<< "$names"
@@ -135,18 +142,18 @@ cmd_add() {
 
   # Проверить что не существует
   local existing
-  existing=$(jq -r --arg n "$name" '.inbounds[0].settings.clients[] | select(.email == $n) | .email' "$XRAY_CONFIG")
+  existing=$(get_uuid "$name")
   [[ -z "$existing" ]] || die "Пользователь '$name' уже существует"
 
   # Генерировать UUID
   local uuid
   uuid=$($XRAY_BIN uuid)
 
-  # Добавить в конфиг
+  # Добавить в конфиг (в vless inbound)
   local tmp
   tmp=$(mktemp)
   jq --arg n "$name" --arg u "$uuid" \
-    '.inbounds[0].settings.clients += [{"id": $u, "email": $n, "flow": "xtls-rprx-vision"}]' \
+    '(.inbounds[] | select(.protocol == "vless") | .settings.clients) += [{"id": $u, "email": $n, "flow": "xtls-rprx-vision"}]' \
     "$XRAY_CONFIG" > "$tmp"
   cp "$tmp" "$XRAY_CONFIG"
   rm "$tmp"
@@ -172,7 +179,7 @@ cmd_del() {
   local tmp
   tmp=$(mktemp)
   jq --arg n "$name" \
-    '.inbounds[0].settings.clients = [.inbounds[0].settings.clients[] | select(.email != $n)]' \
+    '(.inbounds[] | select(.protocol == "vless") | .settings.clients) = [(.inbounds[] | select(.protocol == "vless") | .settings.clients[] | select(.email != $n))]' \
     "$XRAY_CONFIG" > "$tmp"
   cp "$tmp" "$XRAY_CONFIG"
   rm "$tmp"
