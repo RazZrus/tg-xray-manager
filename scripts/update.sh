@@ -21,15 +21,10 @@ cd "$BOT_DIR"
 git pull origin main
 log "Код обновлён"
 
-# 2. Устанавливаем зависимости
+# 2. Устанавливаем зависимости (dist/ уже в репо, сборка не нужна)
 step "npm install"
 npm install --omit=dev
 log "Зависимости обновлены"
-
-# 3. Пересборка TypeScript
-step "npm run build"
-npm run build
-log "Сборка успешна"
 
 # 4. Обновляем xray-mgr если он изменился
 step "Обновление xray-mgr"

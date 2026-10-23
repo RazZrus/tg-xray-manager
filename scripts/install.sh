@@ -256,10 +256,7 @@ install_bot() {
   fi
 
   cd "$INSTALL_DIR"
-  rm -rf node_modules
-  NODE_ENV=development npm ci
-  npm run build
-  npm prune --omit=dev
+  npm install --omit=dev
   npm link
   log "tg-xray-manager установлен в $INSTALL_DIR"
 }
