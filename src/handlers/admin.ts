@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import {
   listUsers,
   findUser,
+  findUserByXrayName,
   upsertUser,
   deleteUser as dbDeleteUser,
   createPromoCode,
@@ -12,8 +13,6 @@ import {
   listUsers as xrayListUsers,
   addUser,
   deleteUser as xrayDeleteUser,
-  getUserLink,
-  getUserQrPath,
   getXrayStatus,
   restartXray,
   runShellCommand,
@@ -21,15 +20,9 @@ import {
   shutdownServer,
 } from '../services/xray.js';
 import { loadConfig } from '../config.js';
-import fs from 'fs';
 
-// Ожидание ввода для команд
 const awaitingShell = new Set<number>();
 const awaitingAddUser = new Set<number>();
-const awaitingDelUser = new Set<number>();
-
-// Ожидание подтверждений (reboot/shutdown)
-const pendingConfirm = new Map<number, 'reboot' | 'shutdown'>();
 
 export function isAdmin(telegramId: number): boolean {
   const config = loadConfig();
@@ -45,9 +38,7 @@ export function adminMiddleware(ctx: Context, next: () => Promise<void>): Promis
   const text = ctx.message?.text || ctx.callbackQuery?.data || '';
   const isAdminCommand = text.startsWith('/admin') || text.startsWith('/shell') ||
     awaitingShell.has(ctx.from.id) ||
-    awaitingAddUser.has(ctx.from.id) ||
-    awaitingDelUser.has(ctx.from.id) ||
-    pendingConfirm.has(ctx.from.id);
+    awaitingAddUser.has(ctx.from.id);
 
   if (isAdminCommand && !isAdmin(ctx.from.id)) {
     return ctx.reply('Нет доступа.').then(() => {});
@@ -175,7 +166,6 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       }
 
       case 'reboot': {
-        pendingConfirm.set(ctx.from.id, 'reboot');
         await ctx.reply(
           '⚠️ Подтверди перезагрузку сервера:',
           {
@@ -188,7 +178,6 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       }
 
       case 'shutdown': {
-        pendingConfirm.set(ctx.from.id, 'shutdown');
         await ctx.reply(
           '⚠️ Подтверди выключение сервера:',
           {
@@ -213,7 +202,6 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     const action = ctx.match[1];
 
     if (action === 'cancel') {
-      pendingConfirm.delete(ctx.from.id);
       await ctx.reply('Отменено.');
       return;
     }
@@ -316,7 +304,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
 
     try {
       xrayDeleteUser(name);
-      const dbUser = listUsers().find(u => u.xray_username === name);
+      const dbUser = findUserByXrayName(name);
       if (dbUser) dbDeleteUser(dbUser.telegram_id);
       await ctx.reply(`✅ Пользователь \`${name}\` удалён.`, { parse_mode: 'Markdown' });
     } catch (e) {

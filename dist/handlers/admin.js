@@ -11,12 +11,8 @@ const crypto_1 = __importDefault(require("crypto"));
 const index_js_1 = require("../db/index.js");
 const xray_js_1 = require("../services/xray.js");
 const config_js_1 = require("../config.js");
-// Ожидание ввода для команд
 const awaitingShell = new Set();
 const awaitingAddUser = new Set();
-const awaitingDelUser = new Set();
-// Ожидание подтверждений (reboot/shutdown)
-const pendingConfirm = new Map();
 function isAdmin(telegramId) {
     const config = (0, config_js_1.loadConfig)();
     if (config.adminIds.includes(telegramId))
@@ -31,9 +27,7 @@ function adminMiddleware(ctx, next) {
     const text = ctx.message?.text || ctx.callbackQuery?.data || '';
     const isAdminCommand = text.startsWith('/admin') || text.startsWith('/shell') ||
         awaitingShell.has(ctx.from.id) ||
-        awaitingAddUser.has(ctx.from.id) ||
-        awaitingDelUser.has(ctx.from.id) ||
-        pendingConfirm.has(ctx.from.id);
+        awaitingAddUser.has(ctx.from.id);
     if (isAdminCommand && !isAdmin(ctx.from.id)) {
         return ctx.reply('Нет доступа.').then(() => { });
     }
@@ -144,7 +138,6 @@ function registerAdminHandlers(bot) {
                 break;
             }
             case 'reboot': {
-                pendingConfirm.set(ctx.from.id, 'reboot');
                 await ctx.reply('⚠️ Подтверди перезагрузку сервера:', {
                     reply_markup: new grammy_1.InlineKeyboard()
                         .text('✅ Да, перезагрузить', 'confirm:reboot')
@@ -153,7 +146,6 @@ function registerAdminHandlers(bot) {
                 break;
             }
             case 'shutdown': {
-                pendingConfirm.set(ctx.from.id, 'shutdown');
                 await ctx.reply('⚠️ Подтверди выключение сервера:', {
                     reply_markup: new grammy_1.InlineKeyboard()
                         .text('✅ Да, выключить', 'confirm:shutdown')
@@ -172,7 +164,6 @@ function registerAdminHandlers(bot) {
         await ctx.answerCallbackQuery();
         const action = ctx.match[1];
         if (action === 'cancel') {
-            pendingConfirm.delete(ctx.from.id);
             await ctx.reply('Отменено.');
             return;
         }
@@ -259,7 +250,7 @@ function registerAdminHandlers(bot) {
         }
         try {
             (0, xray_js_1.deleteUser)(name);
-            const dbUser = (0, index_js_1.listUsers)().find(u => u.xray_username === name);
+            const dbUser = (0, index_js_1.findUserByXrayName)(name);
             if (dbUser)
                 (0, index_js_1.deleteUser)(dbUser.telegram_id);
             await ctx.reply(`✅ Пользователь \`${name}\` удалён.`, { parse_mode: 'Markdown' });

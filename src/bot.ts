@@ -1,4 +1,4 @@
-import { Bot, Context, session } from 'grammy';
+import { Bot, Context } from 'grammy';
 import { loadConfig } from './config.js';
 import { registerUserHandlers } from './handlers/user.js';
 import { registerAdminHandlers } from './handlers/admin.js';

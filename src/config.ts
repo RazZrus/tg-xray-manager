@@ -14,19 +14,25 @@ export interface Config {
   statsPort: number;
 }
 
+let cachedConfig: Config | null = null;
+
 export function configExists(): boolean {
   return fs.existsSync(CONFIG_PATH);
 }
 
 export function loadConfig(): Config {
+  if (cachedConfig) return cachedConfig;
+
   if (!configExists()) {
     throw new Error(`Конфиг не найден: ${CONFIG_PATH}. Запустите tg-xray-bot без аргументов для настройки.`);
   }
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-  return JSON.parse(raw) as Config;
+  cachedConfig = JSON.parse(raw) as Config;
+  return cachedConfig;
 }
 
 export function saveConfig(config: Config): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
+  cachedConfig = config;
 }

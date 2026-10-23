@@ -18,7 +18,8 @@ echo "Директория: $BOT_DIR"
 # 1. Получаем последние изменения
 step "git pull"
 cd "$BOT_DIR"
-git pull origin main
+git fetch origin main
+git reset --hard origin/main
 log "Код обновлён"
 
 # 2. Устанавливаем зависимости (dist/ уже в репо, сборка не нужна)

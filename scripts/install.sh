@@ -250,7 +250,8 @@ install_bot() {
 
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     warn "$INSTALL_DIR уже существует — обновляю"
-    git -C "$INSTALL_DIR" pull origin main
+    git -C "$INSTALL_DIR" fetch origin main
+    git -C "$INSTALL_DIR" reset --hard origin/main
   else
     git clone "$REPO_URL" "$INSTALL_DIR"
   fi

@@ -3,7 +3,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getDb = getDb;
 exports.findUser = findUser;
 exports.findUserByXrayName = findUserByXrayName;
 exports.listUsers = listUsers;
@@ -29,6 +28,7 @@ function getDb() {
         db.pragma('journal_mode = WAL');
         db.pragma('foreign_keys = ON');
         migrate(db);
+        initStatements(db);
     }
     return db;
 }
@@ -53,29 +53,15 @@ function migrate(db) {
     );
   `);
 }
-function findUser(telegramId) {
-    return getDb()
-        .prepare('SELECT * FROM users WHERE telegram_id = ?')
-        .get(telegramId);
-}
-function findUserByXrayName(xrayUsername) {
-    return getDb()
-        .prepare('SELECT * FROM users WHERE xray_username = ?')
-        .get(xrayUsername);
-}
-function listUsers() {
-    return getDb()
-        .prepare('SELECT * FROM users ORDER BY registered_at ASC')
-        .all();
-}
-function listAdmins() {
-    return getDb()
-        .prepare('SELECT * FROM users WHERE is_admin = 1')
-        .all();
-}
-function upsertUser(user) {
-    getDb()
-        .prepare(`
+// Cached prepared statements
+let stmts;
+function initStatements(db) {
+    stmts = {
+        findUser: db.prepare('SELECT * FROM users WHERE telegram_id = ?'),
+        findUserByXrayName: db.prepare('SELECT * FROM users WHERE xray_username = ?'),
+        listUsers: db.prepare('SELECT * FROM users ORDER BY registered_at ASC'),
+        listAdmins: db.prepare('SELECT * FROM users WHERE is_admin = 1'),
+        upsertUser: db.prepare(`
       INSERT INTO users (telegram_id, telegram_username, first_name, last_name, xray_username, registered_at, is_admin)
       VALUES (@telegram_id, @telegram_username, @first_name, @last_name, @xray_username, @registered_at, @is_admin)
       ON CONFLICT(telegram_id) DO UPDATE SET
@@ -84,41 +70,61 @@ function upsertUser(user) {
         last_name         = excluded.last_name,
         xray_username     = COALESCE(excluded.xray_username, xray_username),
         is_admin          = excluded.is_admin
-    `)
-        .run({
+    `),
+        setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE telegram_id = ?'),
+        deleteUser: db.prepare('DELETE FROM users WHERE telegram_id = ?'),
+        createPromoCode: db.prepare('INSERT INTO promo_codes (code, created_by, created_at) VALUES (?, ?, ?)'),
+        findPromoCode: db.prepare('SELECT * FROM promo_codes WHERE code = ?'),
+        markPromoCodeUsed: db.prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ?'),
+        listPromoCodes: db.prepare('SELECT * FROM promo_codes ORDER BY created_at DESC'),
+    };
+}
+function findUser(telegramId) {
+    getDb();
+    return stmts.findUser.get(telegramId);
+}
+function findUserByXrayName(xrayUsername) {
+    getDb();
+    return stmts.findUserByXrayName.get(xrayUsername);
+}
+function listUsers() {
+    getDb();
+    return stmts.listUsers.all();
+}
+function listAdmins() {
+    getDb();
+    return stmts.listAdmins.all();
+}
+function upsertUser(user) {
+    getDb();
+    stmts.upsertUser.run({
         ...user,
         registered_at: Date.now(),
         is_admin: user.is_admin ?? 0,
     });
 }
 function setAdmin(telegramId, isAdmin) {
-    getDb()
-        .prepare('UPDATE users SET is_admin = ? WHERE telegram_id = ?')
-        .run(isAdmin ? 1 : 0, telegramId);
+    getDb();
+    stmts.setAdmin.run(isAdmin ? 1 : 0, telegramId);
 }
 function deleteUser(telegramId) {
-    getDb()
-        .prepare('DELETE FROM users WHERE telegram_id = ?')
-        .run(telegramId);
+    getDb();
+    stmts.deleteUser.run(telegramId);
 }
 function createPromoCode(code, createdBy) {
-    getDb()
-        .prepare('INSERT INTO promo_codes (code, created_by, created_at) VALUES (?, ?, ?)')
-        .run(code, createdBy, Date.now());
+    getDb();
+    stmts.createPromoCode.run(code, createdBy, Date.now());
 }
 function findPromoCode(code) {
-    return getDb()
-        .prepare('SELECT * FROM promo_codes WHERE code = ?')
-        .get(code);
+    getDb();
+    return stmts.findPromoCode.get(code);
 }
 function markPromoCodeUsed(code, usedBy) {
-    getDb()
-        .prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ?')
-        .run(usedBy, Date.now(), code);
+    getDb();
+    stmts.markPromoCodeUsed.run(usedBy, Date.now(), code);
 }
 function listPromoCodes() {
-    return getDb()
-        .prepare('SELECT * FROM promo_codes ORDER BY created_at DESC')
-        .all();
+    getDb();
+    return stmts.listPromoCodes.all();
 }
 //# sourceMappingURL=index.js.map

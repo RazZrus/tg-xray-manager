@@ -8,13 +8,14 @@ const DB_PATH = path.join(DB_DIR, 'db.sqlite');
 
 let db: Database.Database;
 
-export function getDb(): Database.Database {
+function getDb(): Database.Database {
   if (!db) {
     fs.mkdirSync(DB_DIR, { recursive: true });
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     migrate(db);
+    initStatements(db);
   }
   return db;
 }
@@ -41,6 +42,46 @@ function migrate(db: Database.Database): void {
   `);
 }
 
+// Cached prepared statements
+let stmts: {
+  findUser: Database.Statement;
+  findUserByXrayName: Database.Statement;
+  listUsers: Database.Statement;
+  listAdmins: Database.Statement;
+  upsertUser: Database.Statement;
+  setAdmin: Database.Statement;
+  deleteUser: Database.Statement;
+  createPromoCode: Database.Statement;
+  findPromoCode: Database.Statement;
+  markPromoCodeUsed: Database.Statement;
+  listPromoCodes: Database.Statement;
+};
+
+function initStatements(db: Database.Database): void {
+  stmts = {
+    findUser: db.prepare('SELECT * FROM users WHERE telegram_id = ?'),
+    findUserByXrayName: db.prepare('SELECT * FROM users WHERE xray_username = ?'),
+    listUsers: db.prepare('SELECT * FROM users ORDER BY registered_at ASC'),
+    listAdmins: db.prepare('SELECT * FROM users WHERE is_admin = 1'),
+    upsertUser: db.prepare(`
+      INSERT INTO users (telegram_id, telegram_username, first_name, last_name, xray_username, registered_at, is_admin)
+      VALUES (@telegram_id, @telegram_username, @first_name, @last_name, @xray_username, @registered_at, @is_admin)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        telegram_username = excluded.telegram_username,
+        first_name        = excluded.first_name,
+        last_name         = excluded.last_name,
+        xray_username     = COALESCE(excluded.xray_username, xray_username),
+        is_admin          = excluded.is_admin
+    `),
+    setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE telegram_id = ?'),
+    deleteUser: db.prepare('DELETE FROM users WHERE telegram_id = ?'),
+    createPromoCode: db.prepare('INSERT INTO promo_codes (code, created_by, created_at) VALUES (?, ?, ?)'),
+    findPromoCode: db.prepare('SELECT * FROM promo_codes WHERE code = ?'),
+    markPromoCodeUsed: db.prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ?'),
+    listPromoCodes: db.prepare('SELECT * FROM promo_codes ORDER BY created_at DESC'),
+  };
+}
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 export interface User {
@@ -54,58 +95,42 @@ export interface User {
 }
 
 export function findUser(telegramId: number): User | undefined {
-  return getDb()
-    .prepare('SELECT * FROM users WHERE telegram_id = ?')
-    .get(telegramId) as User | undefined;
+  getDb();
+  return stmts.findUser.get(telegramId) as User | undefined;
 }
 
 export function findUserByXrayName(xrayUsername: string): User | undefined {
-  return getDb()
-    .prepare('SELECT * FROM users WHERE xray_username = ?')
-    .get(xrayUsername) as User | undefined;
+  getDb();
+  return stmts.findUserByXrayName.get(xrayUsername) as User | undefined;
 }
 
 export function listUsers(): User[] {
-  return getDb()
-    .prepare('SELECT * FROM users ORDER BY registered_at ASC')
-    .all() as User[];
+  getDb();
+  return stmts.listUsers.all() as User[];
 }
 
 export function listAdmins(): User[] {
-  return getDb()
-    .prepare('SELECT * FROM users WHERE is_admin = 1')
-    .all() as User[];
+  getDb();
+  return stmts.listAdmins.all() as User[];
 }
 
 export function upsertUser(user: Omit<User, 'registered_at' | 'is_admin'> & { is_admin?: number }): void {
-  getDb()
-    .prepare(`
-      INSERT INTO users (telegram_id, telegram_username, first_name, last_name, xray_username, registered_at, is_admin)
-      VALUES (@telegram_id, @telegram_username, @first_name, @last_name, @xray_username, @registered_at, @is_admin)
-      ON CONFLICT(telegram_id) DO UPDATE SET
-        telegram_username = excluded.telegram_username,
-        first_name        = excluded.first_name,
-        last_name         = excluded.last_name,
-        xray_username     = COALESCE(excluded.xray_username, xray_username),
-        is_admin          = excluded.is_admin
-    `)
-    .run({
-      ...user,
-      registered_at: Date.now(),
-      is_admin: user.is_admin ?? 0,
-    });
+  getDb();
+  stmts.upsertUser.run({
+    ...user,
+    registered_at: Date.now(),
+    is_admin: user.is_admin ?? 0,
+  });
 }
 
 export function setAdmin(telegramId: number, isAdmin: boolean): void {
-  getDb()
-    .prepare('UPDATE users SET is_admin = ? WHERE telegram_id = ?')
-    .run(isAdmin ? 1 : 0, telegramId);
+  getDb();
+  stmts.setAdmin.run(isAdmin ? 1 : 0, telegramId);
 }
 
 export function deleteUser(telegramId: number): void {
-  getDb()
-    .prepare('DELETE FROM users WHERE telegram_id = ?')
-    .run(telegramId);
+  getDb();
+  stmts.deleteUser.run(telegramId);
 }
 
 // ─── Promo codes ──────────────────────────────────────────────────────────────
@@ -119,25 +144,21 @@ export interface PromoCode {
 }
 
 export function createPromoCode(code: string, createdBy: number): void {
-  getDb()
-    .prepare('INSERT INTO promo_codes (code, created_by, created_at) VALUES (?, ?, ?)')
-    .run(code, createdBy, Date.now());
+  getDb();
+  stmts.createPromoCode.run(code, createdBy, Date.now());
 }
 
 export function findPromoCode(code: string): PromoCode | undefined {
-  return getDb()
-    .prepare('SELECT * FROM promo_codes WHERE code = ?')
-    .get(code) as PromoCode | undefined;
+  getDb();
+  return stmts.findPromoCode.get(code) as PromoCode | undefined;
 }
 
 export function markPromoCodeUsed(code: string, usedBy: number): void {
-  getDb()
-    .prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ?')
-    .run(usedBy, Date.now(), code);
+  getDb();
+  stmts.markPromoCodeUsed.run(usedBy, Date.now(), code);
 }
 
 export function listPromoCodes(): PromoCode[] {
-  return getDb()
-    .prepare('SELECT * FROM promo_codes ORDER BY created_at DESC')
-    .all() as PromoCode[];
+  getDb();
+  return stmts.listPromoCodes.all() as PromoCode[];
 }

@@ -44,10 +44,17 @@ const protoLoader = __importStar(require("@grpc/proto-loader"));
 const path_1 = __importDefault(require("path"));
 const config_js_1 = require("../config.js");
 const PROTO_PATH = path_1.default.join(__dirname, '../../proto/stats.proto');
-let clientCache = null;
+let cachedClient = null;
+let cachedHost = null;
 function getStatsClient() {
     const config = (0, config_js_1.loadConfig)();
     const host = `127.0.0.1:${config.statsPort}`;
+    if (cachedClient && cachedHost === host) {
+        return cachedClient;
+    }
+    if (cachedClient) {
+        cachedClient.close();
+    }
     const packageDef = protoLoader.loadSync(PROTO_PATH, {
         keepCase: true,
         longs: String,
@@ -61,55 +68,54 @@ function getStatsClient() {
     const stats = app?.['stats'];
     const command = stats?.['command'];
     const StatsService = command?.['StatsService'];
-    return new StatsService(host, grpc.credentials.createInsecure());
+    cachedClient = new StatsService(host, grpc.credentials.createInsecure());
+    cachedHost = host;
+    return cachedClient;
+}
+function callQueryStats(pattern) {
+    return new Promise((resolve) => {
+        const client = getStatsClient();
+        client.QueryStats({ pattern, reset: false }, (err, response) => {
+            if (err) {
+                resolve({ stat: [] });
+                return;
+            }
+            resolve(response ?? { stat: [] });
+        });
+    });
+}
+function parseTrafficStats(stats) {
+    const result = new Map();
+    for (const stat of stats) {
+        const parts = stat.name.split('>>>');
+        if (parts.length < 4)
+            continue;
+        const username = parts[1];
+        const val = parseInt(stat.value || '0', 10) || 0;
+        if (!result.has(username))
+            result.set(username, { upload: 0, download: 0 });
+        const entry = result.get(username);
+        if (stat.name.includes('uplink'))
+            entry.upload = val;
+        if (stat.name.includes('downlink'))
+            entry.download = val;
+    }
+    return result;
 }
 async function queryUserStats(xrayUsername) {
-    return new Promise((resolve, reject) => {
-        const client = getStatsClient();
-        client.QueryStats({ pattern: `user>>>${xrayUsername}>>>traffic`, reset: false }, (err, response) => {
-            if (err) {
-                // Stats API недоступен — возвращаем нули
-                resolve({ name: xrayUsername, upload: 0, download: 0 });
-                return;
-            }
-            let upload = 0;
-            let download = 0;
-            for (const stat of response?.stat ?? []) {
-                const val = parseInt(stat.value || '0', 10) || 0;
-                if (stat.name.includes('uplink'))
-                    upload = val;
-                if (stat.name.includes('downlink'))
-                    download = val;
-            }
-            resolve({ name: xrayUsername, upload, download });
-        });
-    });
+    const response = await callQueryStats(`user>>>${xrayUsername}>>>traffic`);
+    const statsMap = parseTrafficStats(response.stat);
+    const entry = statsMap.get(xrayUsername);
+    return {
+        name: xrayUsername,
+        upload: entry?.upload ?? 0,
+        download: entry?.download ?? 0,
+    };
 }
 async function queryAllStats() {
-    return new Promise((resolve, reject) => {
-        const client = getStatsClient();
-        client.QueryStats({ pattern: 'user>>>*>>>traffic', reset: false }, (err, response) => {
-            if (err) {
-                resolve([]);
-                return;
-            }
-            const statsMap = {};
-            for (const stat of response?.stat ?? []) {
-                const parts = stat.name.split('>>>');
-                if (parts.length < 3)
-                    continue;
-                const username = parts[1];
-                const val = parseInt(stat.value || '0', 10) || 0;
-                if (!statsMap[username])
-                    statsMap[username] = { upload: 0, download: 0 };
-                if (stat.name.includes('uplink'))
-                    statsMap[username].upload = val;
-                if (stat.name.includes('downlink'))
-                    statsMap[username].download = val;
-            }
-            resolve(Object.entries(statsMap).map(([name, s]) => ({ name, ...s })));
-        });
-    });
+    const response = await callQueryStats('user>>>*>>>traffic');
+    const statsMap = parseTrafficStats(response.stat);
+    return Array.from(statsMap.entries()).map(([name, s]) => ({ name, ...s }));
 }
 function formatBytes(bytes) {
     if (bytes >= 1_073_741_824)

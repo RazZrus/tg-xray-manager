@@ -1,5 +1,3 @@
-import Database from 'better-sqlite3';
-export declare function getDb(): Database.Database;
 export interface User {
     telegram_id: number;
     telegram_username: string | null;

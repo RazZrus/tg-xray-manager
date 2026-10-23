@@ -5,11 +5,27 @@ import { loadConfig } from '../config.js';
 
 const PROTO_PATH = path.join(__dirname, '../../proto/stats.proto');
 
-let clientCache: grpc.ServiceClientConstructor | null = null;
+let cachedClient: grpc.Client | null = null;
+let cachedHost: string | null = null;
 
-function getStatsClient() {
+interface StatsClient extends grpc.Client {
+  QueryStats(
+    req: { pattern: string; reset: boolean },
+    cb: (err: Error | null, res: QueryStatsResponse) => void
+  ): void;
+}
+
+function getStatsClient(): StatsClient {
   const config = loadConfig();
   const host = `127.0.0.1:${config.statsPort}`;
+
+  if (cachedClient && cachedHost === host) {
+    return cachedClient as StatsClient;
+  }
+
+  if (cachedClient) {
+    cachedClient.close();
+  }
 
   const packageDef = protoLoader.loadSync(PROTO_PATH, {
     keepCase: true,
@@ -26,7 +42,9 @@ function getStatsClient() {
   const command = stats?.['command'] as Record<string, unknown>;
   const StatsService = command?.['StatsService'] as grpc.ServiceClientConstructor;
 
-  return new StatsService(host, grpc.credentials.createInsecure());
+  cachedClient = new StatsService(host, grpc.credentials.createInsecure());
+  cachedHost = host;
+  return cachedClient as StatsClient;
 }
 
 interface Stat {
@@ -44,75 +62,52 @@ export interface UserTraffic {
   download: number;
 }
 
-export async function queryUserStats(xrayUsername: string): Promise<UserTraffic> {
-  return new Promise((resolve, reject) => {
+function callQueryStats(pattern: string): Promise<QueryStatsResponse> {
+  return new Promise((resolve) => {
     const client = getStatsClient();
-
-    (client as unknown as {
-      QueryStats: (
-        req: { pattern: string; reset: boolean },
-        cb: (err: Error | null, res: QueryStatsResponse) => void
-      ) => void
-    }).QueryStats(
-      { pattern: `user>>>${xrayUsername}>>>traffic`, reset: false },
-      (err, response) => {
-        if (err) {
-          // Stats API недоступен — возвращаем нули
-          resolve({ name: xrayUsername, upload: 0, download: 0 });
-          return;
-        }
-
-        let upload = 0;
-        let download = 0;
-
-        for (const stat of response?.stat ?? []) {
-          const val = parseInt(stat.value || '0', 10) || 0;
-          if (stat.name.includes('uplink')) upload = val;
-          if (stat.name.includes('downlink')) download = val;
-        }
-
-        resolve({ name: xrayUsername, upload, download });
+    client.QueryStats({ pattern, reset: false }, (err, response) => {
+      if (err) {
+        resolve({ stat: [] });
+        return;
       }
-    );
+      resolve(response ?? { stat: [] });
+    });
   });
 }
 
+function parseTrafficStats(stats: Stat[]): Map<string, { upload: number; download: number }> {
+  const result = new Map<string, { upload: number; download: number }>();
+
+  for (const stat of stats) {
+    const parts = stat.name.split('>>>');
+    if (parts.length < 4) continue;
+    const username = parts[1];
+    const val = parseInt(stat.value || '0', 10) || 0;
+
+    if (!result.has(username)) result.set(username, { upload: 0, download: 0 });
+    const entry = result.get(username)!;
+    if (stat.name.includes('uplink')) entry.upload = val;
+    if (stat.name.includes('downlink')) entry.download = val;
+  }
+
+  return result;
+}
+
+export async function queryUserStats(xrayUsername: string): Promise<UserTraffic> {
+  const response = await callQueryStats(`user>>>${xrayUsername}>>>traffic`);
+  const statsMap = parseTrafficStats(response.stat);
+  const entry = statsMap.get(xrayUsername);
+  return {
+    name: xrayUsername,
+    upload: entry?.upload ?? 0,
+    download: entry?.download ?? 0,
+  };
+}
+
 export async function queryAllStats(): Promise<UserTraffic[]> {
-  return new Promise((resolve, reject) => {
-    const client = getStatsClient();
-
-    (client as unknown as {
-      QueryStats: (
-        req: { pattern: string; reset: boolean },
-        cb: (err: Error | null, res: QueryStatsResponse) => void
-      ) => void
-    }).QueryStats(
-      { pattern: 'user>>>*>>>traffic', reset: false },
-      (err, response) => {
-        if (err) {
-          resolve([]);
-          return;
-        }
-
-        const statsMap: Record<string, { upload: number; download: number }> = {};
-
-        for (const stat of response?.stat ?? []) {
-          const parts = stat.name.split('>>>');
-          if (parts.length < 3) continue;
-          const username = parts[1];
-          const val = parseInt(stat.value || '0', 10) || 0;
-
-          if (!statsMap[username]) statsMap[username] = { upload: 0, download: 0 };
-          if (stat.name.includes('uplink')) statsMap[username].upload = val;
-          if (stat.name.includes('downlink')) statsMap[username].download = val;
-        }
-
-        resolve(
-          Object.entries(statsMap).map(([name, s]) => ({ name, ...s }))
-        );
-      }
-    );
-  });
+  const response = await callQueryStats('user>>>*>>>traffic');
+  const statsMap = parseTrafficStats(response.stat);
+  return Array.from(statsMap.entries()).map(([name, s]) => ({ name, ...s }));
 }
 
 export function formatBytes(bytes: number): string {
