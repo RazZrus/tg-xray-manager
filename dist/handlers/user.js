@@ -94,7 +94,7 @@ function registerUserHandlers(bot) {
         }
     });
     // Обработка текстовых сообщений — ввод промокода и имени
-    bot.on('message:text', async (ctx) => {
+    bot.on('message:text', async (ctx, next) => {
         const telegramId = ctx.from.id;
         const text = ctx.message.text.trim();
         // Ввод промокода
@@ -144,6 +144,7 @@ function registerUserHandlers(bot) {
             }
             return;
         }
+        return next();
     });
 }
 async function notifyAdmins(bot, message) {

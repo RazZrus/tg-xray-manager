@@ -112,7 +112,7 @@ export function registerUserHandlers(bot: Bot<Context>): void {
   });
 
   // Обработка текстовых сообщений — ввод промокода и имени
-  bot.on('message:text', async (ctx) => {
+  bot.on('message:text', async (ctx, next) => {
     const telegramId = ctx.from!.id;
     const text = ctx.message.text.trim();
 
@@ -180,6 +180,8 @@ export function registerUserHandlers(bot: Bot<Context>): void {
       }
       return;
     }
+
+    return next();
   });
 }
 
