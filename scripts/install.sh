@@ -257,7 +257,7 @@ install_bot() {
 
   cd "$INSTALL_DIR"
   rm -rf node_modules
-  npm ci
+  NODE_ENV=development npm ci
   npm run build
   npm prune --omit=dev
   npm link
