@@ -1,0 +1,41 @@
+{
+  "name": "tg-xray-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for managing xray VLESS+REALITY VPN server",
+  "main": "dist/index.js",
+  "bin": {
+    "tg-xray-bot": "bin/tg-xray-bot.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js",
+    "update": "bash scripts/update.sh",
+    "uninstall": "bash scripts/uninstall.sh"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.11.3",
+    "@grpc/proto-loader": "^0.7.13",
+    "better-sqlite3": "^11.5.0",
+    "grammy": "^1.31.0",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.9.0",
+    "@types/prompts": "^2.4.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "scripts/",
+    "proto/"
+  ],
+  "keywords": ["xray", "vpn", "telegram", "vless", "reality"],
+  "license": "MIT"
+}
