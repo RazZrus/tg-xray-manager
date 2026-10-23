@@ -12,7 +12,7 @@
     "start": "node dist/index.js",
     "update": "bash scripts/update.sh",
     "uninstall": "bash scripts/uninstall.sh",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.11.3",
