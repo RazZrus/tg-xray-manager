@@ -262,19 +262,22 @@ patch_xray_config_for_stats() {
 
 # ─── Установка xray-mgr ───────────────────────────────────────────────────────
 
+XRAY_MGR_URL="https://raw.githubusercontent.com/RazZrus/tg-xray-manager/main/scripts/xray-mgr.sh"
+
 install_xray_mgr() {
   step "Установка xray-mgr"
 
-  # Зависимости
   apt-get install -y jq qrencode bc curl
 
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   if [[ -f "${script_dir}/xray-mgr.sh" ]]; then
+    # Запуск из клонированного репо — берём локальный файл
     cp "${script_dir}/xray-mgr.sh" /usr/local/bin/xray-mgr
   else
-    error "xray-mgr.sh не найден в ${script_dir}"
+    # Запуск через curl — скачиваем напрямую с GitHub
+    curl -fsSL "$XRAY_MGR_URL" -o /usr/local/bin/xray-mgr
   fi
 
   chmod +x /usr/local/bin/xray-mgr
