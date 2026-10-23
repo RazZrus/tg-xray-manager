@@ -283,7 +283,7 @@ install_xray_mgr() {
 
 # ─── Установка бота ───────────────────────────────────────────────────────────
 
-REPO_URL="https://github.com/smotryaev/tg-xray-vpn-bot.git"
+REPO_URL="https://github.com/RazZrus/tg-xray-manager.git"
 INSTALL_DIR="/opt/tg-xray-bot"
 
 install_bot() {
