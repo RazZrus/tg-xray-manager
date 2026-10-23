@@ -11,7 +11,8 @@
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "update": "bash scripts/update.sh",
-    "uninstall": "bash scripts/uninstall.sh"
+    "uninstall": "bash scripts/uninstall.sh",
+    "prepare": "husky"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.11.3",
@@ -24,6 +25,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.9.0",
     "@types/prompts": "^2.4.9",
+    "husky": "^9.1.7",
     "ts-node": "^10.9.2",
     "typescript": "^5.6.3"
   },
@@ -36,6 +38,12 @@
     "scripts/",
     "proto/"
   ],
-  "keywords": ["xray", "vpn", "telegram", "vless", "reality"],
+  "keywords": [
+    "xray",
+    "vpn",
+    "telegram",
+    "vless",
+    "reality"
+  ],
   "license": "MIT"
 }
