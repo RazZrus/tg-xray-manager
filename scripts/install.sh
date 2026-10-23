@@ -312,8 +312,8 @@ configure_bot() {
   # Определяем server_ip и xray_port из конфига xray если есть
   local server_ip xray_port sni
   if [[ -f /usr/local/etc/xray/config.json ]]; then
-    xray_port=$(jq -r '.inbounds[0].port // 443' /usr/local/etc/xray/config.json)
-    sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"' /usr/local/etc/xray/config.json)
+    xray_port=$(jq -r '[.inbounds[] | select(.protocol == "vless")][0].port // 443' /usr/local/etc/xray/config.json)
+    sni=$(jq -r '[.inbounds[] | select(.protocol == "vless")][0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"' /usr/local/etc/xray/config.json)
   else
     xray_port=443
     sni="www.microsoft.com"
