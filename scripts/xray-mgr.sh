@@ -76,9 +76,12 @@ make_link() {
 # ─── Stats API (gRPC) ─────────────────────────────────────────────────────────
 
 # Запрос к Stats API через grpcurl
+PROTO_DIR="/opt/tg-xray-manager/proto"
+
 stats_query() {
   local pattern="$1"
   grpcurl -plaintext \
+    -import-path "$PROTO_DIR" -proto stats.proto \
     -d "{\"pattern\": \"${pattern}\", \"reset\": false}" \
     "127.0.0.1:${STATS_PORT}" \
     xray.app.stats.command.StatsService/QueryStats 2>/dev/null || echo '{}'
