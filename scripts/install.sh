@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
-# tg-xray-bot installer
-# Режим A: xray уже установлен — ставим только бот + xray-mgr
-# Режим B: полная установка с нуля (xray + конфиги + бот + xray-mgr)
+# tg-xray-manager installer
 #
 # Установка одной командой:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/tg-xray-vpn-bot/main/scripts/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/RazZrus/tg-xray-manager/main/scripts/install.sh)
 set -euo pipefail
 
-# При запуске через curl | bash stdin занят пайпом — читаем с терминала напрямую
-TTY=/dev/tty
-ask() {
-  local prompt="$1" var="$2" default="${3:-}"
-  if [[ -n "$default" ]]; then
-    read -rp "$prompt [$default]: " "$var" <"$TTY"
-    [[ -z "${!var}" ]] && printf -v "$var" '%s' "$default"
-  else
-    read -rp "$prompt: " "$var" <"$TTY"
-  fi
-}
+REPO_URL="https://github.com/RazZrus/tg-xray-manager.git"
+INSTALL_DIR="/opt/tg-xray-manager"
+XRAY_MGR_URL="https://raw.githubusercontent.com/RazZrus/tg-xray-manager/main/scripts/xray-mgr.sh"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,13 +15,46 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log()     { echo -e "${GREEN}[✓]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
-error()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
-step()    { echo -e "\n${BLUE}━━━${NC} $*"; }
+log()   { echo -e "${GREEN}[✓]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
+step()  { echo -e "\n${BLUE}━━━${NC} $*"; }
 
 require_root() {
-  [[ $EUID -eq 0 ]] || error "Запустите от root: sudo bash install.sh"
+  [[ $EUID -eq 0 ]] || error "Запустите от root: sudo bash ..."
+}
+
+# ─── whiptail ────────────────────────────────────────────────────────────────
+
+ensure_whiptail() {
+  command -v whiptail &>/dev/null || apt-get install -y whiptail
+}
+
+# Меню со стрелками: menu <title> <item1> <desc1> <item2> <desc2> ...
+# Возвращает выбранный item в stdout
+menu() {
+  local title="$1"; shift
+  local items=("$@")
+  whiptail --title "tg-xray-manager installer" \
+           --menu "$title" 15 60 "${#items[@]}" \
+           "${items[@]}" \
+           3>&1 1>&2 2>&3 3>&- </dev/tty
+}
+
+# Поле ввода: inputbox <title> <default>
+inputbox() {
+  local title="$1" default="${2:-}"
+  whiptail --title "tg-xray-manager installer" \
+           --inputbox "$title" 10 60 "$default" \
+           3>&1 1>&2 2>&3 3>&- </dev/tty
+}
+
+# Диалог подтверждения
+confirm() {
+  local msg="$1"
+  whiptail --title "tg-xray-manager installer" \
+           --yesno "$msg" 10 60 \
+           </dev/tty
 }
 
 # ─── Определение ОС ──────────────────────────────────────────────────────────
@@ -39,14 +62,11 @@ require_root() {
 detect_os() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
-    OS=$ID
-    OS_VERSION=$VERSION_ID
   else
     error "Не удалось определить ОС. Поддерживается Ubuntu 22.04+"
   fi
-
-  if [[ "$OS" != "ubuntu" ]] && [[ "$OS" != "debian" ]]; then
-    warn "Протестировано на Ubuntu 22.04+. Текущая ОС: $OS $OS_VERSION"
+  if [[ "${ID:-}" != "ubuntu" ]] && [[ "${ID:-}" != "debian" ]]; then
+    warn "Протестировано на Ubuntu 22.04+. Текущая ОС: ${ID:-unknown} ${VERSION_ID:-}"
   fi
 }
 
@@ -54,15 +74,14 @@ detect_os() {
 
 install_nodejs() {
   if command -v node &>/dev/null; then
-    local version
-    version=$(node --version | sed 's/v//' | cut -d. -f1)
-    if (( version >= 20 )); then
+    local ver
+    ver=$(node --version | sed 's/v//' | cut -d. -f1)
+    if (( ver >= 20 )); then
       log "Node.js $(node --version) уже установлен"
       return
     fi
-    warn "Node.js $(node --version) слишком старый. Обновляю..."
+    warn "Node.js $(node --version) устарел, обновляю..."
   fi
-
   step "Установка Node.js 20 LTS"
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
@@ -74,30 +93,23 @@ install_nodejs() {
 install_xray() {
   step "Установка xray-core"
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-  log "xray установлен: $(xray version | head -1)"
+  log "xray установлен"
 }
 
 # ─── Генерация конфига xray с нуля ───────────────────────────────────────────
 
 generate_xray_config() {
-  local server_ip="$1"
-  local port="${2:-443}"
-  local sni="${3:-www.microsoft.com}"
+  local server_ip="$1" port="${2:-443}" sni="${3:-www.microsoft.com}"
 
   step "Генерация xray конфига (VLESS+REALITY+TCP+gRPC Stats)"
 
-  # Генерируем keypair
-  local keypair
+  local keypair private_key public_key short_id
   keypair=$(xray x25519)
-  local private_key
   private_key=$(echo "$keypair" | grep 'Private key' | awk '{print $NF}')
-  local public_key
-  public_key=$(echo "$keypair" | grep 'Public key' | awk '{print $NF}')
-
-  local short_id
+  public_key=$(echo "$keypair"  | grep 'Public key'  | awk '{print $NF}')
   short_id=$(openssl rand -hex 8)
 
-  mkdir -p /usr/local/etc/xray
+  mkdir -p /usr/local/etc/xray /var/log/xray
 
   cat > /usr/local/etc/xray/config.json <<EOF
 {
@@ -107,22 +119,12 @@ generate_xray_config() {
     "error": "/var/log/xray/error.log"
   },
   "stats": {},
-  "api": {
-    "tag": "api",
-    "services": ["StatsService"]
-  },
+  "api": { "tag": "api", "services": ["StatsService"] },
   "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    },
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
     "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true,
-      "statsOutboundUplink": true,
-      "statsOutboundDownlink": true
+      "statsInboundUplink": true, "statsInboundDownlink": true,
+      "statsOutboundUplink": true, "statsOutboundDownlink": true
     }
   },
   "inbounds": [
@@ -131,10 +133,7 @@ generate_xray_config() {
       "listen": "0.0.0.0",
       "port": ${port},
       "protocol": "vless",
-      "settings": {
-        "clients": [],
-        "decryption": "none"
-      },
+      "settings": { "clients": [], "decryption": "none" },
       "streamSettings": {
         "network": "tcp",
         "security": "reality",
@@ -148,68 +147,35 @@ generate_xray_config() {
           "shortIds": ["${short_id}"]
         }
       },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls"]
-      }
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
     },
     {
       "tag": "api-in",
       "listen": "127.0.0.1",
       "port": 10085,
       "protocol": "dokodemo-door",
-      "settings": {
-        "address": "127.0.0.1"
-      }
+      "settings": { "address": "127.0.0.1" }
     }
   ],
   "outbounds": [
-    {
-      "tag": "direct",
-      "protocol": "freedom",
-      "settings": {}
-    },
-    {
-      "tag": "blocked",
-      "protocol": "blackhole",
-      "settings": {}
-    }
+    { "tag": "direct",  "protocol": "freedom",   "settings": {} },
+    { "tag": "blocked", "protocol": "blackhole",  "settings": {} }
   ],
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
-      {
-        "type": "field",
-        "inboundTag": ["api-in"],
-        "outboundTag": "api"
-      },
-      {
-        "type": "field",
-        "ip": ["geoip:ru", "geoip:cn", "geoip:by"],
-        "outboundTag": "blocked"
-      },
-      {
-        "type": "field",
-        "domain": ["geosite:category-ads-all"],
-        "outboundTag": "blocked"
-      },
-      {
-        "type": "field",
-        "protocol": ["bittorrent"],
-        "outboundTag": "blocked"
-      }
+      { "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" },
+      { "type": "field", "ip": ["geoip:ru","geoip:cn","geoip:by"], "outboundTag": "blocked" },
+      { "type": "field", "domain": ["geosite:category-ads-all"],   "outboundTag": "blocked" },
+      { "type": "field", "protocol": ["bittorrent"],                "outboundTag": "blocked" }
     ]
   }
 }
 EOF
-
-  mkdir -p /var/log/xray
-  log "Конфиг сгенерирован"
-  echo "Public key: ${public_key}"
-  echo "Short ID:   ${short_id}"
+  log "Конфиг сгенерирован (public key: ${public_key})"
 }
 
-# ─── Патч существующего конфига для Stats API ─────────────────────────────────
+# ─── Патч существующего конфига для Stats API ────────────────────────────────
 
 patch_xray_config_for_stats() {
   local config="/usr/local/etc/xray/config.json"
@@ -217,7 +183,6 @@ patch_xray_config_for_stats() {
 
   step "Добавление Stats API в конфиг xray"
 
-  # Проверяем, не добавлен ли уже stats
   if jq -e '.stats' "$config" &>/dev/null; then
     log "Stats API уже настроен"
     return
@@ -225,125 +190,99 @@ patch_xray_config_for_stats() {
 
   local tmp
   tmp=$(mktemp)
-
   jq '
-    . +
-    {
+    . + {
       "stats": {},
       "api": { "tag": "api", "services": ["StatsService"] },
       "policy": {
         "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
         "system": {
-          "statsInboundUplink": true,
-          "statsInboundDownlink": true,
-          "statsOutboundUplink": true,
-          "statsOutboundDownlink": true
+          "statsInboundUplink": true, "statsInboundDownlink": true,
+          "statsOutboundUplink": true, "statsOutboundDownlink": true
         }
       }
     }
     | .inbounds += [{
-        "tag": "api-in",
-        "listen": "127.0.0.1",
-        "port": 10085,
-        "protocol": "dokodemo-door",
-        "settings": { "address": "127.0.0.1" }
+        "tag": "api-in", "listen": "127.0.0.1", "port": 10085,
+        "protocol": "dokodemo-door", "settings": { "address": "127.0.0.1" }
       }]
     | .routing.rules = ([{
-        "type": "field",
-        "inboundTag": ["api-in"],
-        "outboundTag": "api"
+        "type": "field", "inboundTag": ["api-in"], "outboundTag": "api"
       }] + (.routing.rules // []))
   ' "$config" > "$tmp"
-
-  cp "$tmp" "$config"
-  rm "$tmp"
+  cp "$tmp" "$config" && rm "$tmp"
   log "Stats API добавлен в конфиг"
 }
 
-# ─── Установка xray-mgr ───────────────────────────────────────────────────────
-
-XRAY_MGR_URL="https://raw.githubusercontent.com/RazZrus/tg-xray-manager/main/scripts/xray-mgr.sh"
+# ─── xray-mgr ────────────────────────────────────────────────────────────────
 
 install_xray_mgr() {
   step "Установка xray-mgr"
-
   apt-get install -y jq qrencode bc curl
 
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Если запущено из клонированного репо — берём локальный файл,
+  # иначе (curl pipe) — скачиваем с GitHub напрямую
+  local src=""
+  local script_src="${BASH_SOURCE[0]:-}"
+  if [[ -n "$script_src" && "$script_src" != /dev/fd/* && "$script_src" != /proc/* ]]; then
+    local script_dir
+    script_dir="$(cd "$(dirname "$script_src")" && pwd)"
+    [[ -f "${script_dir}/xray-mgr.sh" ]] && src="${script_dir}/xray-mgr.sh"
+  fi
+  # Также проверяем, не клонировали ли репо уже в INSTALL_DIR
+  [[ -z "$src" && -f "${INSTALL_DIR}/scripts/xray-mgr.sh" ]] && src="${INSTALL_DIR}/scripts/xray-mgr.sh"
 
-  if [[ -f "${script_dir}/xray-mgr.sh" ]]; then
-    # Запуск из клонированного репо — берём локальный файл
-    cp "${script_dir}/xray-mgr.sh" /usr/local/bin/xray-mgr
+  if [[ -n "$src" ]]; then
+    cp "$src" /usr/local/bin/xray-mgr
   else
-    # Запуск через curl — скачиваем напрямую с GitHub
     curl -fsSL "$XRAY_MGR_URL" -o /usr/local/bin/xray-mgr
   fi
 
   chmod +x /usr/local/bin/xray-mgr
-  log "xray-mgr установлен в /usr/local/bin/xray-mgr"
+  log "xray-mgr установлен → /usr/local/bin/xray-mgr"
 }
 
-# ─── Установка бота ───────────────────────────────────────────────────────────
-
-REPO_URL="https://github.com/RazZrus/tg-xray-manager.git"
-INSTALL_DIR="/opt/tg-xray-bot"
+# ─── Бот ─────────────────────────────────────────────────────────────────────
 
 install_bot() {
-  step "Установка tg-xray-bot из GitHub"
-
-  if command -v git &>/dev/null; then
-    : # ok
-  else
-    apt-get install -y git
-  fi
+  step "Установка tg-xray-manager из GitHub"
+  command -v git &>/dev/null || apt-get install -y git
 
   if [[ -d "$INSTALL_DIR/.git" ]]; then
-    warn "Директория $INSTALL_DIR уже существует — обновляю"
-    cd "$INSTALL_DIR"
-    git pull origin main
+    warn "$INSTALL_DIR уже существует — обновляю"
+    git -C "$INSTALL_DIR" pull origin main
   else
     git clone "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
   fi
 
+  cd "$INSTALL_DIR"
   npm install --omit=dev
   npm run build
   npm link
-
-  log "tg-xray-bot установлен в $INSTALL_DIR"
+  log "tg-xray-manager установлен в $INSTALL_DIR"
 }
 
 # ─── PM2 ─────────────────────────────────────────────────────────────────────
 
 setup_pm2() {
   step "Настройка PM2"
-
-  if ! command -v pm2 &>/dev/null; then
-    npm install -g pm2
-  fi
-
+  command -v pm2 &>/dev/null || npm install -g pm2
   log "PM2 $(pm2 --version) готов"
 }
 
-# ─── Меню выбора режима ───────────────────────────────────────────────────────
+# ─── Главное меню ────────────────────────────────────────────────────────────
 
 main() {
   require_root
   detect_os
+  ensure_whiptail
 
-  echo ""
-  echo "╔══════════════════════════════════════╗"
-  echo "║        tg-xray-bot installer         ║"
-  echo "╚══════════════════════════════════════╝"
-  echo ""
-  echo "Выберите режим установки:"
-  echo ""
-  echo "  [A] Только бот + xray-mgr (xray уже установлен)"
-  echo "  [B] Полная установка с нуля (xray + бот + xray-mgr)"
-  echo ""
-  ask "Режим [A/B]" mode
-  mode=$(echo "$mode" | tr '[:lower:]' '[:upper:]')
+  # Выбор режима
+  local mode
+  mode=$(menu \
+    "Выберите режим установки:" \
+    "A" "Только бот + xray-mgr  (xray уже установлен)" \
+    "B" "Полная установка с нуля (xray + конфиг + бот)")
 
   case "$mode" in
     A)
@@ -357,9 +296,11 @@ main() {
     B)
       local auto_ip
       auto_ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
-      ask "Внешний IP сервера" server_ip "$auto_ip"
-      ask "Порт xray" xray_port "443"
-      ask "SNI (домен для маскировки)" sni "www.microsoft.com"
+
+      local server_ip xray_port sni
+      server_ip=$(inputbox "Внешний IP сервера" "$auto_ip")
+      xray_port=$(inputbox "Порт xray" "443")
+      sni=$(inputbox "SNI (домен для маскировки)" "www.microsoft.com")
 
       install_nodejs
       install_xray
@@ -369,21 +310,15 @@ main() {
       setup_pm2
       install_bot
       ;;
-    *)
-      error "Неверный выбор. Введите A или B."
-      ;;
   esac
 
+  clear
   echo ""
   log "Установка завершена!"
   echo ""
-  echo "Следующие шаги:"
-  echo ""
-  echo "  Первый запуск:   tg-xray-bot"
-  echo "  (бот запросит токен и настройки, после чего стартует через PM2)"
-  echo ""
-  echo "Обновление:   bash ${INSTALL_DIR}/scripts/update.sh"
-  echo "Удаление:     bash ${INSTALL_DIR}/scripts/uninstall.sh"
+  echo "  Первый запуск:  tg-xray-bot"
+  echo "  Обновление:     bash ${INSTALL_DIR}/scripts/update.sh"
+  echo "  Удаление:       bash ${INSTALL_DIR}/scripts/uninstall.sh"
   echo ""
 }
 
