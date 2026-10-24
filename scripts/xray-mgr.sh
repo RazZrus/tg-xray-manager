@@ -44,46 +44,46 @@ cfg() { jq -r "$1" "$XRAY_CONFIG"; }
 VLESS='([.inbounds[] | select(.tag == "vless-reality")] | first)'
 VLESS_GRPC='([.inbounds[] | select(.tag == "vless-grpc")] | first)'
 
-# Get IP/port for vless link
-get_server_ip() {
-  curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'
-}
+BOT_CONFIG="$HOME/.tg-xray-bot/config.json"
 
-get_server_name() {
-  local bot_config="$HOME/.tg-xray-bot/config.json"
-  if [[ -f "$bot_config" ]]; then
-    local name
-    name=$(jq -r '.serverName // empty' "$bot_config" 2>/dev/null)
-    [[ -n "$name" ]] && echo "$name" && return
-  fi
-  hostname
-}
+# Read all values from xray config and write them to bot config.json.
+# Called once at every xray-mgr invocation (skipped if config or jq is missing).
+sync_bot_config() {
+  [[ -f "$BOT_CONFIG" ]] || return
+  command -v jq &>/dev/null || return
+  [[ -f "$XRAY_CONFIG" ]] || return
 
-get_xray_port()  { cfg "${VLESS}.port // 443"; }
-get_grpc_port()  { cfg "${VLESS_GRPC}.port // 8443"; }
-get_sni()        { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
-get_short_id()   { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
-get_public_key() {
-  local bot_config="$HOME/.tg-xray-bot/config.json"
-  if [[ -f "$bot_config" ]]; then
-    local pk
-    pk=$(jq -r '.publicKey // empty' "$bot_config" 2>/dev/null)
-    [[ -n "$pk" ]] && echo "$pk" && return
-  fi
-  # Try publicKey directly from xray config
-  local pk_from_cfg
-  pk_from_cfg=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
-  [[ -n "$pk_from_cfg" ]] && echo "$pk_from_cfg" && return
-  # Derive from privateKey
-  local priv
+  local port sni short_id priv pub stats_port
+  port=$(cfg "${VLESS}.port // 443")
+  sni=$(cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // empty")
+  short_id=$(cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // empty")
   priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey // empty")
+  stats_port=$(jq -r '([.inbounds[] | select(.tag == "api")] | first).port // 10085' "$XRAY_CONFIG")
+
   if [[ -n "$priv" ]]; then
-    local derived
-    derived=$(/usr/local/bin/xray x25519 -i "$priv" 2>/dev/null | grep -oP '(?<=Public key: )\S+')
-    [[ -n "$derived" ]] && echo "$derived" && return
+    pub=$("$XRAY_BIN" x25519 -i "$priv" 2>/dev/null | grep -i 'public key' | awk '{print $NF}')
   fi
-  echo ""
+
+  local tmp
+  tmp=$(mktemp)
+  jq \
+    --argjson xrayPort  "${port:-443}" \
+    --arg     sni       "${sni:-}" \
+    --arg     shortId   "${short_id:-}" \
+    --arg     publicKey "${pub:-}" \
+    --argjson statsPort "${stats_port:-10085}" \
+    '. + {xrayPort: $xrayPort, sni: $sni, shortId: $shortId, publicKey: $publicKey, statsPort: $statsPort}' \
+    "$BOT_CONFIG" > "$tmp" && mv "$tmp" "$BOT_CONFIG" || rm -f "$tmp"
 }
+
+# All helpers read from config.json (kept current by sync_bot_config above)
+get_server_ip()   { curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'; }
+get_server_name() { jq -r '.serverName // empty' "$BOT_CONFIG" 2>/dev/null || hostname; }
+get_xray_port()   { jq -r '.xrayPort   // 443'   "$BOT_CONFIG" 2>/dev/null; }
+get_grpc_port()   { cfg "${VLESS_GRPC}.port // 8443"; }
+get_sni()         { jq -r '.sni        // empty' "$BOT_CONFIG" 2>/dev/null; }
+get_short_id()    { jq -r '.shortId    // empty' "$BOT_CONFIG" 2>/dev/null; }
+get_public_key()  { jq -r '.publicKey  // empty' "$BOT_CONFIG" 2>/dev/null; }
 
 # Find user by name in TCP inbound, return UUID
 get_uuid() {
@@ -426,6 +426,8 @@ Commands:
   restart                     Restart xray (requires root)
 EOF
 }
+
+sync_bot_config
 
 COMMAND="${1:-}"
 shift || true
