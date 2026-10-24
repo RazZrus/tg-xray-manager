@@ -1,38 +1,7 @@
 import prompts from 'prompts'
-import { saveConfig, type Config } from './config.js'
+import { saveConfig, readXrayDerivedFields, type Config } from './config.js'
 import { execSync } from 'child_process'
-import fs from 'fs'
 import os from 'os'
-
-const XRAY_CONFIG = '/usr/local/etc/xray/config.json'
-
-function readXrayPublicKey(): string {
-  try {
-    const raw = fs.readFileSync(XRAY_CONFIG, 'utf-8')
-    const cfg = JSON.parse(raw) as { inbounds?: { tag: string; streamSettings?: { realitySettings?: { publicKey?: string; privateKey?: string } } }[] }
-    const inbound = cfg.inbounds?.find(i => i.tag === 'vless-reality')
-    const rs = inbound?.streamSettings?.realitySettings
-
-    if (rs?.publicKey) {
-      return rs.publicKey
-    }
-
-    if (rs?.privateKey) {
-      const result = execSync(`/usr/local/bin/xray x25519 -i ${rs.privateKey}`, {
-        encoding: 'utf-8',
-        timeout: 5000,
-      })
-      const match = result.match(/Public key:\s*(\S+)/)
-      if (match) {
-        return match[1]
-      }
-    }
-
-    return ''
-  } catch {
-    return ''
-  }
-}
 
 export async function runWizard(): Promise<Config> {
   console.log('\n=== tg-xray-bot — initial setup ===\n')
@@ -58,24 +27,6 @@ export async function runWizard(): Promise<Config> {
         initial: detectServerIp(),
       },
       {
-        type: 'number',
-        name: 'xrayPort',
-        message: 'xray port:',
-        initial: 443,
-      },
-      {
-        type: 'text',
-        name: 'sni',
-        message: 'SNI (masquerade domain):',
-        initial: 'www.microsoft.com',
-      },
-      {
-        type: 'number',
-        name: 'statsPort',
-        message: 'xray gRPC Stats API port:',
-        initial: 10085,
-      },
-      {
         type: 'text',
         name: 'serverName',
         message: 'Server display name (shown in VPN client as config name):',
@@ -90,15 +41,26 @@ export async function runWizard(): Promise<Config> {
     }
   )
 
+  const xrayFields = readXrayDerivedFields()
+  const missingXray = (['xrayPort', 'sni', 'statsPort', 'publicKey', 'shortId'] as const)
+    .filter(k => !xrayFields[k])
+
+  if (missingXray.length > 0) {
+    console.error(`\nERROR: Could not read from xray config: ${missingXray.join(', ')}`)
+    console.error('Fix xray config and re-run, or: sudo xray-mgr sync')
+    process.exit(1)
+  }
+
   const config: Config = {
-    botToken: answers.botToken.trim(),
-    adminIds: [parseInt((answers.adminId as string).trim(), 10)],
-    serverIp: answers.serverIp.trim(),
-    xrayPort: answers.xrayPort,
-    sni: answers.sni.trim(),
-    statsPort: answers.statsPort,
+    botToken:   answers.botToken.trim(),
+    adminIds:   [parseInt((answers.adminId as string).trim(), 10)],
+    serverIp:   answers.serverIp.trim(),
     serverName: answers.serverName.trim() || os.hostname(),
-    publicKey: readXrayPublicKey(),
+    xrayPort:   xrayFields.xrayPort!,
+    sni:        xrayFields.sni!,
+    statsPort:  xrayFields.statsPort!,
+    publicKey:  xrayFields.publicKey!,
+    shortId:    xrayFields.shortId!,
   }
 
   saveConfig(config)

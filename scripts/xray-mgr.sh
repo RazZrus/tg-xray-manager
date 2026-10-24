@@ -46,22 +46,42 @@ VLESS_GRPC='([.inbounds[] | select(.tag == "vless-grpc")] | first)'
 
 BOT_CONFIG="$HOME/.tg-xray-bot/config.json"
 
-# Read all values from xray config and write them to bot config.json.
-# Called once at every xray-mgr invocation (skipped if config or jq is missing).
-sync_bot_config() {
-  [[ -f "$BOT_CONFIG" ]] || return
-  command -v jq &>/dev/null || return
-  [[ -f "$XRAY_CONFIG" ]] || return
+# ─── xray config sync ───────────────────────────────────────────────────────
 
+# Read all derivable fields from xray config and write to bot config.json.
+# strict=1 → print ERROR per missing field and return 1
+# strict=0 → print WARN to stderr, continue
+_sync_xray_fields() {
+  local strict="${1:-0}"
   local port sni short_id priv pub stats_port
-  port=$(cfg "${VLESS}.port // 443")
+
+  port=$(cfg "${VLESS}.port // empty")
   sni=$(cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // empty")
   short_id=$(cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // empty")
+  pub=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
   priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey // empty")
-  stats_port=$(jq -r '([.inbounds[] | select(.tag == "api")] | first).port // 10085' "$XRAY_CONFIG")
+  stats_port=$(jq -r '([.inbounds[] | select(.tag == "api")] | first).port // empty' "$XRAY_CONFIG")
 
-  if [[ -n "$priv" ]]; then
-    pub=$("$XRAY_BIN" x25519 -i "$priv" 2>/dev/null | grep -i 'public key' | awk '{print $NF}' || true)
+  if [[ -z "$pub" && -n "$priv" ]]; then
+    pub=$("$XRAY_BIN" x25519 -i "$priv" 2>/dev/null | grep -i 'publickey' | awk '{print $NF}' || true)
+  fi
+
+  local missing=""
+  [[ -n "$port"       ]] || missing="${missing}xrayPort "
+  [[ -n "$sni"        ]] || missing="${missing}sni "
+  [[ -n "$short_id"   ]] || missing="${missing}shortId "
+  [[ -n "$pub"        ]] || missing="${missing}publicKey "
+  [[ -n "$stats_port" ]] || missing="${missing}statsPort "
+
+  if [[ -n "$missing" ]]; then
+    for f in $missing; do
+      if (( strict )); then
+        echo "ERROR: $f is empty — check $XRAY_CONFIG" >&2
+      else
+        echo "WARN: $f could not be read from $XRAY_CONFIG" >&2
+      fi
+    done
+    (( strict )) && return 1
   fi
 
   local tmp
@@ -73,7 +93,15 @@ sync_bot_config() {
     --arg     publicKey "${pub:-}" \
     --argjson statsPort "${stats_port:-10085}" \
     '. + {xrayPort: $xrayPort, sni: $sni, shortId: $shortId, publicKey: $publicKey, statsPort: $statsPort}' \
-    "$BOT_CONFIG" > "$tmp" && mv "$tmp" "$BOT_CONFIG" || rm -f "$tmp"
+    "$BOT_CONFIG" > "$tmp" && mv "$tmp" "$BOT_CONFIG" || { rm -f "$tmp"; echo "ERROR: failed to write $BOT_CONFIG" >&2; return 1; }
+}
+
+# Silent wrapper — called on every xray-mgr invocation
+sync_bot_config() {
+  [[ -f "$BOT_CONFIG" ]] || return 0
+  command -v jq &>/dev/null || return 0
+  [[ -f "$XRAY_CONFIG" ]] || return 0
+  _sync_xray_fields 0
 }
 
 # All helpers read from config.json (kept current by sync_bot_config above)
@@ -394,61 +422,10 @@ cmd_find_uuid() {
 
 cmd_sync() {
   require_jq
-  echo "=== xray-mgr sync ==="
-  echo "BOT_CONFIG : $BOT_CONFIG"
-  echo "XRAY_CONFIG: $XRAY_CONFIG"
-  echo "XRAY_BIN   : $XRAY_BIN"
-  echo ""
-
   [[ -f "$BOT_CONFIG" ]]  || die "Bot config not found: $BOT_CONFIG (run bot setup first)"
   [[ -f "$XRAY_CONFIG" ]] || die "xray config not found: $XRAY_CONFIG"
   [[ -x "$XRAY_BIN" ]]    || die "xray binary not found or not executable: $XRAY_BIN"
-
-  local port sni short_id priv pub stats_port
-  port=$(cfg "${VLESS}.port // 443")
-  sni=$(cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // empty")
-  short_id=$(cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // empty")
-  priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey // empty")
-  stats_port=$(jq -r '([.inbounds[] | select(.tag == "api")] | first).port // 10085' "$XRAY_CONFIG")
-
-  echo "port      : ${port:-(empty)}"
-  echo "sni       : ${sni:-(empty)}"
-  echo "short_id  : ${short_id:-(empty)}"
-  echo "privateKey: ${priv:+(set, length ${#priv})}${priv:-(MISSING — check xray config)}"
-  echo "stats_port: ${stats_port:-(empty)}"
-
-  if [[ -n "$priv" ]]; then
-    local xray_out
-    xray_out=$("$XRAY_BIN" x25519 -i "$priv" 2>&1 || true)
-    echo ""
-    echo "xray x25519 output:"
-    echo "$xray_out"
-    pub=$(echo "$xray_out" | grep -i 'public key' | awk '{print $NF}' || true)
-    echo ""
-    echo "publicKey : ${pub:-(FAILED to extract)}"
-  else
-    echo ""
-    echo "publicKey : SKIPPED (privateKey is missing)"
-  fi
-
-  if [[ -z "$pub" ]]; then
-    echo ""
-    echo "ERROR: Could not derive publicKey. Fix xray config or set publicKey manually in $BOT_CONFIG"
-    exit 1
-  fi
-
-  local tmp
-  tmp=$(mktemp)
-  jq \
-    --argjson xrayPort  "${port:-443}" \
-    --arg     sni       "${sni:-}" \
-    --arg     shortId   "${short_id:-}" \
-    --arg     publicKey "$pub" \
-    --argjson statsPort "${stats_port:-10085}" \
-    '. + {xrayPort: $xrayPort, sni: $sni, shortId: $shortId, publicKey: $publicKey, statsPort: $statsPort}' \
-    "$BOT_CONFIG" > "$tmp" && mv "$tmp" "$BOT_CONFIG" || { rm -f "$tmp"; die "Failed to write $BOT_CONFIG"; }
-
-  echo ""
+  _sync_xray_fields 1
   echo "OK: $BOT_CONFIG updated."
 }
 
