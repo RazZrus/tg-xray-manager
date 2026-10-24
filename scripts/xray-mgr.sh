@@ -2,6 +2,9 @@
 # xray-mgr — manage xray VLESS+REALITY users
 set -euo pipefail
 
+# When run as a systemd service HOME may not be set
+HOME="${HOME:-/root}"
+
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 XRAY_BIN="/usr/local/bin/xray"
 STATS_PORT="${XRAY_STATS_PORT:-10085}"
@@ -358,6 +361,16 @@ cmd_blocked() {
   fi
 }
 
+cmd_find_uuid() {
+  require_jq
+  local uuid="$1"
+  [[ -n "$uuid" ]] || die "Usage: xray-mgr find-uuid <uuid>"
+  local name
+  name=$(jq -r --arg u "$uuid" "${VLESS}.settings.clients[] | select(.id == \$u) | .email" "$XRAY_CONFIG")
+  [[ -n "$name" ]] || die "UUID not found"
+  echo "$name"
+}
+
 cmd_status() {
   systemctl status xray
 }
@@ -387,6 +400,7 @@ Commands:
   qr_grpc <name>              QR code for gRPC connection
   stats <name>                Traffic for a specific user
   blocked [user] [period]     Block stats (period: hour/day/week/month/year)
+  find-uuid <uuid>            Find xray username by UUID
   status                      xray service status
   restart                     Restart xray (requires root)
 EOF
@@ -405,6 +419,7 @@ case "$COMMAND" in
   qr_grpc)   cmd_qr_grpc "${1:-}" ;;
   stats)     cmd_stats "${1:-}" ;;
   blocked)   cmd_blocked "${1:-}" "${2:-}" ;;
+  find-uuid) cmd_find_uuid "${1:-}" ;;
   status)    cmd_status ;;
   restart)   cmd_restart ;;
   *)         usage; exit 1 ;;

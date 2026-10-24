@@ -1,10 +1,10 @@
-import prompts from 'prompts';
-import { saveConfig, type Config } from './config.js';
-import { execSync } from 'child_process';
-import os from 'os';
+import prompts from 'prompts'
+import { saveConfig, type Config } from './config.js'
+import { execSync } from 'child_process'
+import os from 'os'
 
 export async function runWizard(): Promise<Config> {
-  console.log('\n=== tg-xray-bot — initial setup ===\n');
+  console.log('\n=== tg-xray-bot — initial setup ===\n')
 
   const answers = await prompts(
     [
@@ -53,32 +53,32 @@ export async function runWizard(): Promise<Config> {
     ],
     {
       onCancel: () => {
-        console.log('\nSetup cancelled.');
-        process.exit(0);
+        console.log('\nSetup cancelled.')
+        process.exit(0)
       },
     }
-  );
+  )
 
   const config: Config = {
     botToken: answers.botToken.trim(),
-    adminIds: [parseInt(answers.adminId.trim(), 10)],
+    adminIds: [parseInt((answers.adminId as string).trim(), 10)],
     serverIp: answers.serverIp.trim(),
     xrayPort: answers.xrayPort,
     sni: answers.sni.trim(),
     statsPort: answers.statsPort,
     serverName: answers.serverName.trim() || os.hostname(),
-  };
+  }
 
-  saveConfig(config);
-  console.log('\nConfig saved.\n');
+  saveConfig(config)
+  console.log('\nConfig saved.\n')
 
-  return config;
+  return config
 }
 
 function detectServerIp(): string {
   try {
-    return execSync('curl -s --max-time 3 https://api.ipify.org', { timeout: 5000 }).toString().trim();
+    return execSync('curl -s --max-time 3 https://api.ipify.org', { timeout: 5000 }).toString().trim()
   } catch {
-    return '';
+    return ''
   }
 }

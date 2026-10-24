@@ -1,23 +1,24 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import os from 'os';
-import fs from 'fs';
+import Database from 'better-sqlite3'
+import path from 'path'
+import os from 'os'
+import fs from 'fs'
 
-const DB_DIR = path.join(os.homedir(), '.tg-xray-bot');
-const DB_PATH = path.join(DB_DIR, 'db.sqlite');
+const DB_DIR = path.join(os.homedir(), '.tg-xray-bot')
+const DB_PATH = path.join(DB_DIR, 'db.sqlite')
 
-let db: Database.Database;
+let db: Database.Database
 
 function getDb(): Database.Database {
   if (!db) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-    migrate(db);
-    initStatements(db);
+    fs.mkdirSync(DB_DIR, { recursive: true })
+    db = new Database(DB_PATH)
+    db.pragma('journal_mode = WAL')
+    db.pragma('foreign_keys = ON')
+    migrate(db)
+    initStatements(db)
   }
-  return db;
+  
+return db
 }
 
 function migrate(db: Database.Database): void {
@@ -47,7 +48,7 @@ function migrate(db: Database.Database): void {
       download      INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (xray_username, hour_ts)
     );
-  `);
+  `)
 }
 
 // Cached prepared statements
@@ -73,7 +74,7 @@ let stmts: {
   queryAllUsersTrafficRange: Database.Statement;
   queryTrafficRange: Database.Statement;
   deleteUserTraffic: Database.Statement;
-};
+}
 
 function initStatements(db: Database.Database): void {
   stmts = {
@@ -125,7 +126,7 @@ function initStatements(db: Database.Database): void {
       'SELECT COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly WHERE xray_username = ? AND hour_ts >= ? AND hour_ts < ?'
     ),
     deleteUserTraffic: db.prepare('DELETE FROM traffic_hourly WHERE xray_username = ?'),
-  };
+  }
 }
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -141,42 +142,46 @@ export interface User {
 }
 
 export function findUser(telegramId: number): User | undefined {
-  getDb();
-  return stmts.findUser.get(telegramId) as User | undefined;
+  getDb()
+  
+return stmts.findUser.get(telegramId) as User | undefined
 }
 
 export function findUserByXrayName(xrayUsername: string): User | undefined {
-  getDb();
-  return stmts.findUserByXrayName.get(xrayUsername) as User | undefined;
+  getDb()
+  
+return stmts.findUserByXrayName.get(xrayUsername) as User | undefined
 }
 
 export function listUsers(): User[] {
-  getDb();
-  return stmts.listUsers.all() as User[];
+  getDb()
+  
+return stmts.listUsers.all() as User[]
 }
 
 export function listAdmins(): User[] {
-  getDb();
-  return stmts.listAdmins.all() as User[];
+  getDb()
+  
+return stmts.listAdmins.all() as User[]
 }
 
 export function upsertUser(user: Omit<User, 'registered_at' | 'is_admin'> & { is_admin?: number }): void {
-  getDb();
+  getDb()
   stmts.upsertUser.run({
     ...user,
     registered_at: Date.now(),
     is_admin: user.is_admin ?? 0,
-  });
+  })
 }
 
 export function setAdmin(telegramId: number, isAdmin: boolean): void {
-  getDb();
-  stmts.setAdmin.run(isAdmin ? 1 : 0, telegramId);
+  getDb()
+  stmts.setAdmin.run(isAdmin ? 1 : 0, telegramId)
 }
 
 export function deleteUser(telegramId: number): void {
-  getDb();
-  stmts.deleteUser.run(telegramId);
+  getDb()
+  stmts.deleteUser.run(telegramId)
 }
 
 // ─── Promo codes ──────────────────────────────────────────────────────────────
@@ -190,35 +195,38 @@ export interface PromoCode {
 }
 
 export function createPromoCode(code: string, createdBy: number): void {
-  getDb();
-  stmts.createPromoCode.run(code, createdBy, Date.now());
+  getDb()
+  stmts.createPromoCode.run(code, createdBy, Date.now())
 }
 
 export function findPromoCode(code: string): PromoCode | undefined {
-  getDb();
-  return stmts.findPromoCode.get(code) as PromoCode | undefined;
+  getDb()
+  
+return stmts.findPromoCode.get(code) as PromoCode | undefined
 }
 
 export function markPromoCodeUsed(code: string, usedBy: number): void {
-  getDb();
-  stmts.markPromoCodeUsed.run(usedBy, Date.now(), code);
+  getDb()
+  stmts.markPromoCodeUsed.run(usedBy, Date.now(), code)
 }
 
 /** Atomically redeem a promo code. Returns true on success. */
 export function redeemPromoCode(code: string, usedBy: number): boolean {
-  getDb();
-  const result = stmts.redeemPromoCode.run(usedBy, Date.now(), code);
-  return result.changes > 0;
+  getDb()
+  const result = stmts.redeemPromoCode.run(usedBy, Date.now(), code)
+  
+return result.changes > 0
 }
 
 export function deletePromoCode(code: string): void {
-  getDb();
-  stmts.deletePromoCode.run(code);
+  getDb()
+  stmts.deletePromoCode.run(code)
 }
 
 export function listPromoCodes(): PromoCode[] {
-  getDb();
-  return stmts.listPromoCodes.all() as PromoCode[];
+  getDb()
+  
+return stmts.listPromoCodes.all() as PromoCode[]
 }
 
 // ─── Traffic log ─────────────────────────────────────────────────────────────
@@ -233,55 +241,60 @@ export interface UserTrafficRecord extends TrafficRecord {
 }
 
 function currentHourTs(): number {
-  const now = Date.now();
-  return now - (now % (60 * 60 * 1000));
+  const now = Date.now()
+  
+return now - (now % (60 * 60 * 1000))
 }
 
 export function insertTrafficBatch(entries: { xrayUsername: string; upload: number; download: number }[]): void {
-  const db = getDb();
-  const hourTs = currentHourTs();
+  const db = getDb()
+  const hourTs = currentHourTs()
   const tx = db.transaction(() => {
     for (const e of entries) {
-      stmts.upsertTrafficHourly.run(e.xrayUsername, hourTs, e.upload, e.download);
+      stmts.upsertTrafficHourly.run(e.xrayUsername, hourTs, e.upload, e.download)
     }
-  });
-  tx();
+  })
+  tx()
 }
 
 export function queryTraffic(xrayUsername: string, sinceMs?: number): TrafficRecord {
-  getDb();
+  getDb()
   if (sinceMs !== undefined) {
-    return stmts.queryTrafficSince.get(xrayUsername, sinceMs) as TrafficRecord;
+    return stmts.queryTrafficSince.get(xrayUsername, sinceMs) as TrafficRecord
   }
-  return stmts.queryTrafficAll.get(xrayUsername) as TrafficRecord;
+  
+return stmts.queryTrafficAll.get(xrayUsername) as TrafficRecord
 }
 
 export function queryAllUsersTraffic(sinceMs?: number): UserTrafficRecord[] {
-  getDb();
+  getDb()
   if (sinceMs !== undefined) {
-    return stmts.queryAllUsersTrafficSince.all(sinceMs) as UserTrafficRecord[];
+    return stmts.queryAllUsersTrafficSince.all(sinceMs) as UserTrafficRecord[]
   }
-  return stmts.queryAllUsersTrafficAll.all() as UserTrafficRecord[];
+  
+return stmts.queryAllUsersTrafficAll.all() as UserTrafficRecord[]
 }
 
 export function queryAllUsersTrafficRange(fromMs: number, toMs: number): UserTrafficRecord[] {
-  getDb();
-  return stmts.queryAllUsersTrafficRange.all(fromMs, toMs) as UserTrafficRecord[];
+  getDb()
+  
+return stmts.queryAllUsersTrafficRange.all(fromMs, toMs) as UserTrafficRecord[]
 }
 
 export function queryTrafficRange(xrayUsername: string, fromMs: number, toMs: number): TrafficRecord {
-  getDb();
-  return stmts.queryTrafficRange.get(xrayUsername, fromMs, toMs) as TrafficRecord;
+  getDb()
+  
+return stmts.queryTrafficRange.get(xrayUsername, fromMs, toMs) as TrafficRecord
 }
 
 export function deleteUserTraffic(xrayUsername: string): void {
-  getDb();
-  stmts.deleteUserTraffic.run(xrayUsername);
+  getDb()
+  stmts.deleteUserTraffic.run(xrayUsername)
 }
 
 export function closeDb(): void {
   if (db) {
     db.close();
-    (db as unknown) = undefined;
+    (db as unknown) = undefined
   }
 }
