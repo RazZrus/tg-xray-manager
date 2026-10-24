@@ -392,6 +392,66 @@ cmd_find_uuid() {
   echo "$name"
 }
 
+cmd_sync() {
+  require_jq
+  echo "=== xray-mgr sync ==="
+  echo "BOT_CONFIG : $BOT_CONFIG"
+  echo "XRAY_CONFIG: $XRAY_CONFIG"
+  echo "XRAY_BIN   : $XRAY_BIN"
+  echo ""
+
+  [[ -f "$BOT_CONFIG" ]]  || die "Bot config not found: $BOT_CONFIG (run bot setup first)"
+  [[ -f "$XRAY_CONFIG" ]] || die "xray config not found: $XRAY_CONFIG"
+  [[ -x "$XRAY_BIN" ]]    || die "xray binary not found or not executable: $XRAY_BIN"
+
+  local port sni short_id priv pub stats_port
+  port=$(cfg "${VLESS}.port // 443")
+  sni=$(cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // empty")
+  short_id=$(cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // empty")
+  priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey // empty")
+  stats_port=$(jq -r '([.inbounds[] | select(.tag == "api")] | first).port // 10085' "$XRAY_CONFIG")
+
+  echo "port      : ${port:-(empty)}"
+  echo "sni       : ${sni:-(empty)}"
+  echo "short_id  : ${short_id:-(empty)}"
+  echo "privateKey: ${priv:+(set, length ${#priv})}${priv:-(MISSING — check xray config)}"
+  echo "stats_port: ${stats_port:-(empty)}"
+
+  if [[ -n "$priv" ]]; then
+    local xray_out
+    xray_out=$("$XRAY_BIN" x25519 -i "$priv" 2>&1 || true)
+    echo ""
+    echo "xray x25519 output:"
+    echo "$xray_out"
+    pub=$(echo "$xray_out" | grep -i 'public key' | awk '{print $NF}' || true)
+    echo ""
+    echo "publicKey : ${pub:-(FAILED to extract)}"
+  else
+    echo ""
+    echo "publicKey : SKIPPED (privateKey is missing)"
+  fi
+
+  if [[ -z "$pub" ]]; then
+    echo ""
+    echo "ERROR: Could not derive publicKey. Fix xray config or set publicKey manually in $BOT_CONFIG"
+    exit 1
+  fi
+
+  local tmp
+  tmp=$(mktemp)
+  jq \
+    --argjson xrayPort  "${port:-443}" \
+    --arg     sni       "${sni:-}" \
+    --arg     shortId   "${short_id:-}" \
+    --arg     publicKey "$pub" \
+    --argjson statsPort "${stats_port:-10085}" \
+    '. + {xrayPort: $xrayPort, sni: $sni, shortId: $shortId, publicKey: $publicKey, statsPort: $statsPort}' \
+    "$BOT_CONFIG" > "$tmp" && mv "$tmp" "$BOT_CONFIG" || { rm -f "$tmp"; die "Failed to write $BOT_CONFIG"; }
+
+  echo ""
+  echo "OK: $BOT_CONFIG updated."
+}
+
 cmd_status() {
   systemctl status xray
 }
@@ -422,6 +482,7 @@ Commands:
   stats <name>                Traffic for a specific user
   blocked [user] [period]     Block stats (period: hour/day/week/month/year)
   find-uuid <uuid>            Find xray username by UUID
+  sync                        Sync xray config → bot config.json (verbose)
   status                      xray service status
   restart                     Restart xray (requires root)
 EOF
@@ -443,6 +504,7 @@ case "$COMMAND" in
   stats)     cmd_stats "${1:-}" ;;
   blocked)   cmd_blocked "${1:-}" "${2:-}" ;;
   find-uuid) cmd_find_uuid "${1:-}" ;;
+  sync)      cmd_sync ;;
   status)    cmd_status ;;
   restart)   cmd_restart ;;
   *)         usage; exit 1 ;;
