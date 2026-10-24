@@ -34,12 +34,12 @@ export async function checkForUpdates(bot: Bot<Context>): Promise<void> {
     const adminIds = new Set([...config.adminIds, ...admins.map(a => a.telegram_id)]);
 
     const msg =
-      `🔔 *Доступна новая версия ${latest}\\!*\n\n` +
-      `Текущая: \`${CURRENT_VERSION}\`\n\n` +
-      `Обновить:\n\`bash /opt/tg\\-xray\\-manager/scripts/update\\.sh\``;
+      `🔔 <b>Доступна новая версия ${latest}!</b>\n\n` +
+      `Текущая: <code>${CURRENT_VERSION}</code>\n\n` +
+      `Обновить:\n<code>bash /opt/tg-xray-manager/scripts/update.sh</code>`;
 
     await Promise.allSettled(
-      [...adminIds].map(id => bot.api.sendMessage(id, msg, { parse_mode: 'MarkdownV2' }))
+      [...adminIds].map(id => bot.api.sendMessage(id, msg, { parse_mode: 'HTML' }))
     );
   } catch {
     // Non-critical — silently skip if GitHub is unreachable

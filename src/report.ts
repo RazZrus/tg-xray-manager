@@ -5,6 +5,7 @@
 import { queryAllUsersTrafficRange, listAdmins } from './db/index.js';
 import { loadConfig } from './config.js';
 import { formatBytes } from './services/stats.js';
+import { escapeHtml } from './utils.js';
 
 function yesterdayRange(): { from: number; to: number } {
   const todayMidnight = new Date();
@@ -19,7 +20,7 @@ async function sendMessage(token: string, chatId: number, text: string): Promise
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
@@ -48,14 +49,14 @@ async function main(): Promise<void> {
   for (const r of rows) {
     totalUp   += r.upload;
     totalDown += r.download;
-    lines += `• \`${r.xray_username}\` — ⬆️ ${formatBytes(r.upload)} / ⬇️ ${formatBytes(r.download)} *(${formatBytes(r.upload + r.download)})*\n`;
+    lines += `• <code>${escapeHtml(r.xray_username)}</code> — ⬆️ ${formatBytes(r.upload)} / ⬇️ ${formatBytes(r.download)} <b>(${formatBytes(r.upload + r.download)})</b>\n`;
   }
 
   const msg =
-    `📊 *Отчёт за ${dateStr}*\n\n` +
+    `📊 <b>Отчёт за ${dateStr}</b>\n\n` +
     lines +
     `${'─'.repeat(24)}\n` +
-    `Итого: ⬆️ ${formatBytes(totalUp)} / ⬇️ ${formatBytes(totalDown)} — *${formatBytes(totalUp + totalDown)}*`;
+    `Итого: ⬆️ ${formatBytes(totalUp)} / ⬇️ ${formatBytes(totalDown)} — <b>${formatBytes(totalUp + totalDown)}</b>`;
 
   const admins = listAdmins();
   const adminIds = new Set([...config.adminIds, ...admins.map(a => a.telegram_id)]);

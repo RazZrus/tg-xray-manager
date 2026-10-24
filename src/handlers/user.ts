@@ -11,31 +11,29 @@ import {
 import { addUser, getUserLink, getUserGrpcLink, getUserQrPath } from '../services/xray.js';
 import { queryUserStats, formatBytes, PERIOD_LABELS, TrafficPeriod } from '../services/stats.js';
 import { loadConfig } from '../config.js';
+import { escapeHtml } from '../utils.js';
 
-// Состояния ожидания ввода
 const awaitingPromoCode = new Set<number>();
 const awaitingXrayName = new Map<number, string>(); // telegramId → promo code
 
+const HTML = { parse_mode: 'HTML' as const };
+
 export function registerUserHandlers(bot: Bot<Context>): void {
-  // /start
   bot.command('start', async (ctx) => {
     const user = findUser(ctx.from!.id);
     if (user?.xray_username) {
       await ctx.reply(
-        `Привет, ${ctx.from!.first_name}! Ты подключён как \`${user.xray_username}\`.\n\nКоманды:\n/me — твой трафик\n/link — ссылка для подключения\n/qr — QR-код`,
-        { parse_mode: 'Markdown' }
+        `Привет, ${escapeHtml(ctx.from!.first_name ?? '')}! Ты подключён как <code>${escapeHtml(user.xray_username)}</code>.\n\nКоманды:\n/me — твой трафик\n/link — ссылка для подключения\n/qr — QR-код`,
+        HTML,
       );
     } else {
       await ctx.reply(
-        `Привет! Это VPN-бот.\n\nЧтобы получить доступ, нажми кнопку ниже или используй /register.`,
-        {
-          reply_markup: new InlineKeyboard().text('Получить доступ', 'register'),
-        }
+        'Привет! Это VPN-бот.\n\nЧтобы получить доступ, нажми кнопку ниже или используй /register.',
+        { reply_markup: new InlineKeyboard().text('Получить доступ', 'register') },
       );
     }
   });
 
-  // /register
   bot.command('register', startRegister);
   bot.callbackQuery('register', async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -55,7 +53,6 @@ export function registerUserHandlers(bot: Bot<Context>): void {
     await ctx.reply('Введи промокод:');
   }
 
-  // /me — статистика пользователя
   bot.command('me', async (ctx) => {
     const user = findUser(ctx.from!.id);
     if (!user?.xray_username) {
@@ -65,10 +62,9 @@ export function registerUserHandlers(bot: Bot<Context>): void {
 
     const text = buildTrafficMessage(user.xray_username, 'all');
     const keyboard = buildPeriodKeyboard(user.xray_username, 'all');
-    await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+    await ctx.reply(text, { ...HTML, reply_markup: keyboard });
   });
 
-  // Callback: переключение периода для /me
   bot.callbackQuery(/^my_traffic:(.+):(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const username = ctx.match[1];
@@ -76,10 +72,9 @@ export function registerUserHandlers(bot: Bot<Context>): void {
 
     const text = buildTrafficMessage(username, period);
     const keyboard = buildPeriodKeyboard(username, period);
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+    await ctx.editMessageText(text, { ...HTML, reply_markup: keyboard });
   });
 
-  // /link — ссылка для подключения
   bot.command('link', async (ctx) => {
     const user = findUser(ctx.from!.id);
     if (!user?.xray_username) {
@@ -88,14 +83,20 @@ export function registerUserHandlers(bot: Bot<Context>): void {
     }
 
     try {
-      const link = getUserLink(user.xray_username);
-      await ctx.reply(`Твоя ссылка для подключения:\n\n\`${link}\``, { parse_mode: 'Markdown' });
+      const tcpLink = getUserLink(user.xray_username);
+      let grpcLink = '';
+      try { grpcLink = getUserGrpcLink(user.xray_username); } catch {}
+
+      const linkText = grpcLink
+        ? `TCP:\n<code>${escapeHtml(tcpLink)}</code>\n\ngRPC:\n<code>${escapeHtml(grpcLink)}</code>`
+        : `<code>${escapeHtml(tcpLink)}</code>`;
+
+      await ctx.reply(`Ссылка для подключения:\n\n${linkText}`, HTML);
     } catch (e) {
-      await ctx.reply(`Ошибка: ${(e as Error).message}`);
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
-  // /qr — QR-код
   bot.command('qr', async (ctx) => {
     const user = findUser(ctx.from!.id);
     if (!user?.xray_username) {
@@ -108,18 +109,16 @@ export function registerUserHandlers(bot: Bot<Context>): void {
       qrPath = getUserQrPath(user.xray_username);
       await ctx.replyWithPhoto(new InputFile(qrPath));
     } catch (e) {
-      await ctx.reply(`Ошибка генерации QR: ${(e as Error).message}`);
+      await ctx.reply(`Ошибка генерации QR: ${escapeHtml((e as Error).message)}`, HTML);
     } finally {
       if (qrPath) try { fs.unlinkSync(qrPath); } catch {}
     }
   });
 
-  // Обработка текстовых сообщений — ввод промокода и имени
   bot.on('message:text', async (ctx, next) => {
     const telegramId = ctx.from!.id;
     const text = ctx.message.text.trim();
 
-    // Ввод промокода
     if (awaitingPromoCode.has(telegramId)) {
       awaitingPromoCode.delete(telegramId);
 
@@ -135,13 +134,12 @@ export function registerUserHandlers(bot: Bot<Context>): void {
 
       awaitingXrayName.set(telegramId, text);
       await ctx.reply(
-        'Промокод принят! Теперь введи своё имя для VPN (латиница, без пробелов, например: `ivan`):',
-        { parse_mode: 'Markdown' }
+        'Промокод принят! Теперь введи своё имя для VPN (латиница, без пробелов, например: <code>ivan</code>):',
+        HTML,
       );
       return;
     }
 
-    // Ввод имени для xray
     const pendingCode = awaitingXrayName.get(telegramId);
     if (pendingCode) {
       const xrayName = text.toLowerCase().replace(/[^a-z0-9_-]/g, '');
@@ -172,21 +170,21 @@ export function registerUserHandlers(bot: Bot<Context>): void {
         let grpcLink = '';
         try { grpcLink = getUserGrpcLink(xrayName); } catch {}
         const linkText = grpcLink
-          ? `TCP:\n\`${tcpLink}\`\n\ngRPC:\n\`${grpcLink}\``
-          : `\`${tcpLink}\``;
+          ? `TCP:\n<code>${escapeHtml(tcpLink)}</code>\n\ngRPC:\n<code>${escapeHtml(grpcLink)}</code>`
+          : `<code>${escapeHtml(tcpLink)}</code>`;
 
         await ctx.reply(
-          `✅ Аккаунт создан!\n\nИмя: \`${xrayName}\`\n\nСсылка для подключения:\n${linkText}\n\nИспользуй /qr для QR-кода или /me для статистики.`,
-          { parse_mode: 'Markdown' }
+          `✅ Аккаунт создан!\n\nИмя: <code>${escapeHtml(xrayName)}</code>\n\nСсылка для подключения:\n${linkText}\n\nИспользуй /qr для QR-кода или /me для статистики.`,
+          HTML,
         );
 
         await notifyAdmins(
           bot,
-          `👤 Новый пользователь зарегистрировался!\n\nTelegram: ${ctx.from!.first_name}${ctx.from!.username ? ` (@${ctx.from!.username})` : ''}\nVPN имя: \`${xrayName}\``,
+          `👤 Новый пользователь зарегистрировался!\n\nTelegram: ${escapeHtml(ctx.from!.first_name ?? '')}${ctx.from!.username ? ` (@${escapeHtml(ctx.from!.username)})` : ''}\nVPN имя: <code>${escapeHtml(xrayName)}</code>`,
         );
       } catch (e) {
         awaitingXrayName.delete(telegramId);
-        await ctx.reply(`Ошибка создания аккаунта: ${(e as Error).message}`);
+        await ctx.reply(`Ошибка создания аккаунта: ${escapeHtml((e as Error).message)}`, HTML);
       }
       return;
     }
@@ -199,7 +197,7 @@ function buildTrafficMessage(username: string, period: TrafficPeriod): string {
   const stats = queryUserStats(username, period);
   const label = PERIOD_LABELS[period];
   return (
-    `📊 *${username}* — ${label}\n\n` +
+    `📊 <b>${escapeHtml(username)}</b> — ${label}\n\n` +
     `⬆️ Отправлено: ${formatBytes(stats.upload)}\n` +
     `⬇️ Получено:   ${formatBytes(stats.download)}\n` +
     `📦 Итого:      ${formatBytes(stats.upload + stats.download)}`
@@ -220,14 +218,13 @@ async function notifyAdmins(bot: Bot<Context>, message: string): Promise<void> {
   const admins = listAdmins();
   const config = loadConfig();
 
-  // Уведомляем как из БД, так и из конфига
   const adminIds = new Set([
     ...admins.map(a => a.telegram_id),
     ...config.adminIds,
   ]);
 
   await Promise.allSettled(
-    [...adminIds].map(id => bot.api.sendMessage(id, message, { parse_mode: 'Markdown' }))
+    [...adminIds].map(id => bot.api.sendMessage(id, message, HTML))
   );
 }
 

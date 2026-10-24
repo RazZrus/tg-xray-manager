@@ -29,6 +29,7 @@ import {
   TrafficPeriod,
 } from '../services/stats.js';
 import { loadConfig } from '../config.js';
+import { escapeHtml } from '../utils.js';
 
 const awaitingShell = new Set<number>();
 const awaitingAddUser = new Set<number>();
@@ -72,11 +73,13 @@ const serverKeyboard = new Keyboard()
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
+const HTML = { parse_mode: 'HTML' as const };
+
 async function sendOrEditMenu(ctx: Context, text: string, keyboard: Keyboard): Promise<void> {
   const chatId = ctx.chat!.id;
   const oldMsgId = menuMessageId.get(ctx.from!.id);
 
-  const sent = await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+  const sent = await ctx.reply(text, { ...HTML, reply_markup: keyboard });
   menuMessageId.set(ctx.from!.id, sent.message_id);
 
   if (oldMsgId) {
@@ -95,13 +98,13 @@ async function deleteUserMessage(ctx: Context): Promise<void> {
 type Section = 'main' | 'users' | 'promo' | 'server';
 const currentSection = new Map<number, Section>();
 
-// ─── Period keyboard for user detail ─────────────────────────────────────────
+// ─── User detail ─────────────────────────────────────────────────────────────
 
 function buildUserDetailMessage(xrayUsername: string, period: TrafficPeriod): string {
   const stats = queryUserStats(xrayUsername, period);
   const label = PERIOD_LABELS[period];
   return (
-    `👤 *${xrayUsername}* — ${label}\n\n` +
+    `👤 <b>${escapeHtml(xrayUsername)}</b> — ${label}\n\n` +
     `⬆️ Отправлено: ${formatBytes(stats.upload)}\n` +
     `⬇️ Получено:   ${formatBytes(stats.download)}\n` +
     `📦 Итого:      ${formatBytes(stats.upload + stats.download)}`
@@ -128,8 +131,8 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       return;
     }
     currentSection.set(ctx.from!.id, 'main');
-    const sent = await ctx.reply('⚡ *Панель администратора*', {
-      parse_mode: 'Markdown',
+    const sent = await ctx.reply('⚡ <b>Панель администратора</b>', {
+      ...HTML,
       reply_markup: mainKeyboard,
     });
     menuMessageId.set(ctx.from!.id, sent.message_id);
@@ -141,21 +144,21 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from!.id)) return;
     await deleteUserMessage(ctx);
     currentSection.set(ctx.from!.id, 'users');
-    await sendOrEditMenu(ctx, '👥 *Пользователи*', usersKeyboard);
+    await sendOrEditMenu(ctx, '👥 <b>Пользователи</b>', usersKeyboard);
   });
 
   bot.hears('🎫 Промокоды', async (ctx) => {
     if (!isAdmin(ctx.from!.id)) return;
     await deleteUserMessage(ctx);
     currentSection.set(ctx.from!.id, 'promo');
-    await sendOrEditMenu(ctx, '🎫 *Промокоды*', promoKeyboard);
+    await sendOrEditMenu(ctx, '🎫 <b>Промокоды</b>', promoKeyboard);
   });
 
   bot.hears('⚙️ Сервер', async (ctx) => {
     if (!isAdmin(ctx.from!.id)) return;
     await deleteUserMessage(ctx);
     currentSection.set(ctx.from!.id, 'server');
-    await sendOrEditMenu(ctx, '⚙️ *Сервер*', serverKeyboard);
+    await sendOrEditMenu(ctx, '⚙️ <b>Сервер</b>', serverKeyboard);
   });
 
   bot.hears('💻 Терминал', async (ctx) => {
@@ -168,7 +171,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from!.id)) return;
     await deleteUserMessage(ctx);
     currentSection.set(ctx.from!.id, 'main');
-    await sendOrEditMenu(ctx, '⚡ *Панель администратора*', mainKeyboard);
+    await sendOrEditMenu(ctx, '⚡ <b>Панель администратора</b>', mainKeyboard);
   });
 
   // ─── Users ───────────────────────────────────────────────────────────────
@@ -183,16 +186,15 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
         await ctx.reply('Промокодов нет.');
         return;
       }
-      let text = '📋 *Промокоды:*\n\n';
+      let text = '📋 <b>Промокоды:</b>\n\n';
       for (const c of codes.slice(0, 20)) {
         const status = c.used_by ? '✅ использован' : '⏳ активен';
-        text += `• \`${c.code}\` — ${status}\n`;
+        text += `• <code>${escapeHtml(c.code)}</code> — ${status}\n`;
       }
-      await ctx.reply(text, { parse_mode: 'Markdown' });
+      await ctx.reply(text, HTML);
       return;
     }
 
-    // Users list — clickable for detail
     try {
       const xrayUsers = xrayListUsers();
       const dbUsers = listUsers();
@@ -207,18 +209,18 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       const statsMap = new Map(allStats.map(s => [s.name, s]));
 
       const kb = new InlineKeyboard();
-      let text = `👥 *Пользователи (${xrayUsers.length}):*\n\n`;
+      let text = `👥 <b>Пользователи (${xrayUsers.length}):</b>\n\n`;
       for (const u of xrayUsers) {
         const dbUser = dbMap.get(u.name);
-        const tg = dbUser?.telegram_username ? `@${dbUser.telegram_username}` : dbUser?.first_name || '—';
+        const tg = dbUser?.telegram_username ? `@${escapeHtml(dbUser.telegram_username)}` : escapeHtml(dbUser?.first_name || '—');
         const s = statsMap.get(u.name);
         const total = s ? formatBytes(s.upload + s.download) : '—';
-        text += `• \`${u.name}\` (${tg}) — ${total}\n`;
+        text += `• <code>${escapeHtml(u.name)}</code> (${tg}) — ${total}\n`;
         kb.text(`📊 ${u.name}`, `user_detail:${u.name}`).row();
       }
-      await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: kb });
+      await ctx.reply(text, { ...HTML, reply_markup: kb });
     } catch (e) {
-      await ctx.reply(`Ошибка: ${(e as Error).message}`);
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
@@ -258,7 +260,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       }
       await ctx.reply('Выбери пользователя:', { reply_markup: keyboard });
     } catch (e) {
-      await ctx.reply(`Ошибка: ${(e as Error).message}`);
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
@@ -266,7 +268,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from!.id)) return;
     const code = crypto.randomBytes(4).toString('hex').toUpperCase();
     createPromoCode(code, ctx.from!.id);
-    await ctx.reply(`🎫 Создан: \`${code}\``, { parse_mode: 'Markdown' });
+    await ctx.reply(`🎫 Создан: <code>${code}</code>`, HTML);
   });
 
   // ─── User detail with period breakdown ───────────────────────────────────
@@ -277,7 +279,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     const name = ctx.match[1];
     await ctx.reply(
       buildUserDetailMessage(name, 'all'),
-      { parse_mode: 'Markdown', reply_markup: buildUserDetailKeyboard(name, 'all') },
+      { ...HTML, reply_markup: buildUserDetailKeyboard(name, 'all') },
     );
   });
 
@@ -288,7 +290,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     const period = ctx.match[2] as TrafficPeriod;
     await ctx.editMessageText(
       buildUserDetailMessage(name, period),
-      { parse_mode: 'Markdown', reply_markup: buildUserDetailKeyboard(name, period) },
+      { ...HTML, reply_markup: buildUserDetailKeyboard(name, period) },
     );
   });
 
@@ -298,8 +300,8 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
     await ctx.answerCallbackQuery();
     const name = ctx.match[1];
-    await ctx.editMessageText(`Удалить \`${name}\`?`, {
-      parse_mode: 'Markdown',
+    await ctx.editMessageText(`Удалить <code>${escapeHtml(name)}</code>?`, {
+      ...HTML,
       reply_markup: new InlineKeyboard()
         .text('✅ Да', `confirm_del:${name}`)
         .text('❌ Нет', 'confirm_del:cancel'),
@@ -321,9 +323,9 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       deleteUserTraffic(name);
       const dbUser = findUserByXrayName(name);
       if (dbUser) dbDeleteUser(dbUser.telegram_id);
-      await ctx.editMessageText(`✅ \`${name}\` удалён.`, { parse_mode: 'Markdown' });
+      await ctx.editMessageText(`✅ <code>${escapeHtml(name)}</code> удалён.`, HTML);
     } catch (e) {
-      await ctx.editMessageText(`Ошибка: ${(e as Error).message}`);
+      await ctx.editMessageText(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
@@ -335,9 +337,9 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     const code = ctx.match[1];
     try {
       deletePromoCode(code);
-      await ctx.editMessageText(`✅ \`${code}\` удалён.`, { parse_mode: 'Markdown' });
+      await ctx.editMessageText(`✅ <code>${escapeHtml(code)}</code> удалён.`, HTML);
     } catch (e) {
-      await ctx.editMessageText(`Ошибка: ${(e as Error).message}`);
+      await ctx.editMessageText(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
@@ -347,9 +349,9 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from!.id)) return;
     try {
       const status = getXrayStatus();
-      await ctx.reply(`\`\`\`\n${status.slice(0, 3800)}\n\`\`\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`<pre>${escapeHtml(status.slice(0, 3800))}</pre>`, HTML);
     } catch (e) {
-      await ctx.reply(`Ошибка: ${(e as Error).message}`);
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
@@ -359,7 +361,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       restartXray();
       await ctx.reply('✅ xray перезапущен.');
     } catch (e) {
-      await ctx.reply(`Ошибка: ${(e as Error).message}`);
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
@@ -385,8 +387,8 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
     await ctx.answerCallbackQuery();
     const action = ctx.match[1];
-    if (action === 'cancel') { await ctx.editMessageText('Отменено.'); return; }
-    if (action === 'reboot') { await ctx.editMessageText('🔁 Перезагрузка сервера...'); rebootServer(); return; }
+    if (action === 'cancel')   { await ctx.editMessageText('Отменено.'); return; }
+    if (action === 'reboot')   { await ctx.editMessageText('🔁 Перезагрузка сервера...'); rebootServer(); return; }
     if (action === 'shutdown') { await ctx.editMessageText('⛔ Выключение сервера...'); shutdownServer(); return; }
   });
 
@@ -426,20 +428,20 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
         return;
       }
 
-      await ctx.reply(`Создаю \`${name}\`...`, { parse_mode: 'Markdown' });
+      await ctx.reply(`Создаю <code>${escapeHtml(name)}</code>...`, HTML);
       try {
         const tcpLink = addUser(name);
         let grpcLink = '';
         try { grpcLink = getUserGrpcLink(name); } catch {}
         const linkText = grpcLink
-          ? `TCP:\n\`${tcpLink}\`\n\ngRPC:\n\`${grpcLink}\``
-          : `\`${tcpLink}\``;
+          ? `TCP:\n<code>${escapeHtml(tcpLink)}</code>\n\ngRPC:\n<code>${escapeHtml(grpcLink)}</code>`
+          : `<code>${escapeHtml(tcpLink)}</code>`;
         await ctx.reply(
-          `✅ \`${name}\` создан!\n\nСсылка:\n${linkText}`,
-          { parse_mode: 'Markdown' },
+          `✅ <code>${escapeHtml(name)}</code> создан!\n\nСсылка:\n${linkText}`,
+          HTML,
         );
       } catch (e) {
-        await ctx.reply(`Ошибка: ${(e as Error).message}`);
+        await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
       }
       return;
     }
@@ -449,16 +451,16 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
 }
 
 async function executeShell(ctx: Context, command: string): Promise<void> {
-  const msg = await ctx.reply(`\`$ ${command}\`\n\nВыполняю...`, { parse_mode: 'Markdown' });
+  const msg = await ctx.reply(`<code>$ ${escapeHtml(command)}</code>\n\nВыполняю...`, HTML);
   try {
     const output = runShellCommand(command);
     const truncated = output.length > 3800 ? output.slice(0, 3800) + '\n...(обрезано)' : output;
     await ctx.api.editMessageText(
       ctx.chat!.id, msg.message_id,
-      `\`\`\`\n$ ${command}\n\n${truncated}\n\`\`\``,
-      { parse_mode: 'Markdown' },
+      `<pre>$ ${escapeHtml(command)}\n\n${escapeHtml(truncated)}</pre>`,
+      HTML,
     );
   } catch (e) {
-    await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `Ошибка: ${(e as Error).message}`);
+    await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
   }
 }
