@@ -2,8 +2,39 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
-const CONFIG_DIR = path.join(os.homedir(), '.tg-xray-bot')
+const CONFIG_DIR  = path.join(os.homedir(), '.tg-xray-bot')
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json')
+const XRAY_CONFIG = '/usr/local/etc/xray/config.json'
+
+interface XrayInbound {
+  tag: string;
+  port?: number;
+  streamSettings?: {
+    realitySettings?: {
+      publicKey?: string;
+      serverNames?: string[];
+    };
+  };
+}
+
+function readFromXray(): Partial<Config> {
+  try {
+    const raw = fs.readFileSync(XRAY_CONFIG, 'utf-8')
+    const cfg = JSON.parse(raw) as { inbounds?: XrayInbound[] }
+    const vless = cfg.inbounds?.find(i => i.tag === 'vless-reality')
+    const api   = cfg.inbounds?.find(i => i.tag === 'api')
+    const rs    = vless?.streamSettings?.realitySettings
+
+    return {
+      ...(vless?.port                && { xrayPort:  vless.port }),
+      ...(rs?.serverNames?.[0]       && { sni:       rs.serverNames[0] }),
+      ...(rs?.publicKey              && { publicKey: rs.publicKey }),
+      ...(api?.port                  && { statsPort:  api.port }),
+    }
+  } catch {
+    return {}
+  }
+}
 
 export interface Config {
   botToken: string;
@@ -29,8 +60,22 @@ export function loadConfig(): Config {
     throw new Error(`Config not found: ${CONFIG_PATH}. Run tg-xray-bot without arguments to configure.`)
   }
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8')
-  cachedConfig = JSON.parse(raw) as Config
-  
+  const config = JSON.parse(raw) as Config
+
+  const migratable: (keyof Config)[] = ['publicKey', 'xrayPort', 'sni', 'statsPort']
+  const missing = migratable.filter(k => !config[k])
+  if (missing.length > 0) {
+    const fromXray = readFromXray()
+    const filled = missing.filter(k => fromXray[k] !== undefined)
+    if (filled.length > 0) {
+      Object.assign(config, Object.fromEntries(filled.map(k => [k, fromXray[k]])))
+      saveConfig(config)
+      console.log(`[config] migrated from xray config: ${filled.join(', ')}`)
+    }
+  }
+
+  cachedConfig = config
+
 return cachedConfig
 }
 
