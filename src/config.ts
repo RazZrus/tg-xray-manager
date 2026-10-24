@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { execSync } from 'child_process'
 
 const CONFIG_DIR  = path.join(os.homedir(), '.tg-xray-bot')
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json')
@@ -12,9 +13,24 @@ interface XrayInbound {
   streamSettings?: {
     realitySettings?: {
       publicKey?: string;
+      privateKey?: string;
       serverNames?: string[];
     };
   };
+}
+
+function derivePublicKey(privateKey: string): string {
+  try {
+    const result = execSync(`/usr/local/bin/xray x25519 -i ${privateKey}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    })
+    const match = result.match(/Public key:\s*(\S+)/)
+
+    return match ? match[1] : ''
+  } catch {
+    return ''
+  }
 }
 
 function readFromXray(): Partial<Config> {
@@ -25,11 +41,13 @@ function readFromXray(): Partial<Config> {
     const api   = cfg.inbounds?.find(i => i.tag === 'api')
     const rs    = vless?.streamSettings?.realitySettings
 
+    const publicKey = rs?.publicKey || (rs?.privateKey ? derivePublicKey(rs.privateKey) : '')
+
     return {
-      ...(vless?.port                && { xrayPort:  vless.port }),
-      ...(rs?.serverNames?.[0]       && { sni:       rs.serverNames[0] }),
-      ...(rs?.publicKey              && { publicKey: rs.publicKey }),
-      ...(api?.port                  && { statsPort:  api.port }),
+      ...(vless?.port          && { xrayPort:  vless.port }),
+      ...(rs?.serverNames?.[0] && { sni:       rs.serverNames[0] }),
+      ...(publicKey            && { publicKey }),
+      ...(api?.port            && { statsPort:  api.port }),
     }
   } catch {
     return {}

@@ -70,8 +70,19 @@ get_public_key() {
     pk=$(jq -r '.publicKey // empty' "$bot_config" 2>/dev/null)
     [[ -n "$pk" ]] && echo "$pk" && return
   fi
-  # Fallback: read directly from xray config
-  cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty"
+  # Try publicKey directly from xray config
+  local pk_from_cfg
+  pk_from_cfg=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
+  [[ -n "$pk_from_cfg" ]] && echo "$pk_from_cfg" && return
+  # Derive from privateKey
+  local priv
+  priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey // empty")
+  if [[ -n "$priv" ]]; then
+    local derived
+    derived=$(/usr/local/bin/xray x25519 -i "$priv" 2>/dev/null | grep -oP '(?<=Public key: )\S+')
+    [[ -n "$derived" ]] && echo "$derived" && return
+  fi
+  echo ""
 }
 
 # Find user by name in TCP inbound, return UUID
@@ -95,6 +106,11 @@ make_link() {
   public_key=$(get_public_key)
   display_name=$(get_server_name)
 
+  [[ -n "$ip" ]]         || die "Could not determine server IP"
+  [[ -n "$port" ]]       || die "Could not determine xray port"
+  [[ -n "$sni" ]]        || die "Could not determine SNI"
+  [[ -n "$public_key" ]] || die "Public key not found. Check ~/.tg-xray-bot/config.json or xray config privateKey"
+
   echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${display_name}"
 }
 
@@ -112,6 +128,11 @@ make_grpc_link() {
   short_id=$(get_short_id)
   public_key=$(get_public_key)
   display_name=$(get_server_name)
+
+  [[ -n "$ip" ]]         || die "Could not determine server IP"
+  [[ -n "$port" ]]       || die "Could not determine gRPC port"
+  [[ -n "$sni" ]]        || die "Could not determine SNI"
+  [[ -n "$public_key" ]] || die "Public key not found. Check ~/.tg-xray-bot/config.json or xray config privateKey"
 
   echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${display_name} (gRPC)"
 }

@@ -9,9 +9,26 @@ const XRAY_CONFIG = '/usr/local/etc/xray/config.json'
 function readXrayPublicKey(): string {
   try {
     const raw = fs.readFileSync(XRAY_CONFIG, 'utf-8')
-    const cfg = JSON.parse(raw) as { inbounds?: { tag: string; streamSettings?: { realitySettings?: { publicKey?: string } } }[] }
+    const cfg = JSON.parse(raw) as { inbounds?: { tag: string; streamSettings?: { realitySettings?: { publicKey?: string; privateKey?: string } } }[] }
     const inbound = cfg.inbounds?.find(i => i.tag === 'vless-reality')
-    return inbound?.streamSettings?.realitySettings?.publicKey ?? ''
+    const rs = inbound?.streamSettings?.realitySettings
+
+    if (rs?.publicKey) {
+      return rs.publicKey
+    }
+
+    if (rs?.privateKey) {
+      const result = execSync(`/usr/local/bin/xray x25519 -i ${rs.privateKey}`, {
+        encoding: 'utf-8',
+        timeout: 5000,
+      })
+      const match = result.match(/Public key:\s*(\S+)/)
+      if (match) {
+        return match[1]
+      }
+    }
+
+    return ''
   } catch {
     return ''
   }
