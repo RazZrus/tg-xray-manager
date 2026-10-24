@@ -1,60 +1,4 @@
-import * as grpc from '@grpc/grpc-js';
-import * as protoLoader from '@grpc/proto-loader';
-import path from 'path';
-import { loadConfig } from '../config.js';
-
-const PROTO_PATH = path.join(__dirname, '../../proto/stats.proto');
-
-const packageDef = protoLoader.loadSync(PROTO_PATH, {
-  keepCase: true,
-  longs: String,
-  enums: String,
-  defaults: true,
-  oneofs: true,
-});
-
-const proto = grpc.loadPackageDefinition(packageDef) as Record<string, unknown>;
-const pkg = proto['xray'] as Record<string, unknown>;
-const app = pkg?.['app'] as Record<string, unknown>;
-const stats = app?.['stats'] as Record<string, unknown>;
-const command = stats?.['command'] as Record<string, unknown>;
-const StatsServiceConstructor = command?.['StatsService'] as grpc.ServiceClientConstructor;
-
-let cachedClient: StatsClient | null = null;
-let cachedHost: string | null = null;
-
-interface StatsClient extends grpc.Client {
-  QueryStats(
-    req: { pattern: string; reset: boolean },
-    cb: (err: Error | null, res: QueryStatsResponse) => void
-  ): void;
-}
-
-function getStatsClient(): StatsClient {
-  const config = loadConfig();
-  const host = `127.0.0.1:${config.statsPort}`;
-
-  if (cachedClient && cachedHost === host) {
-    return cachedClient;
-  }
-
-  if (cachedClient) {
-    cachedClient.close();
-  }
-
-  cachedClient = new StatsServiceConstructor(host, grpc.credentials.createInsecure()) as unknown as StatsClient;
-  cachedHost = host;
-  return cachedClient;
-}
-
-interface Stat {
-  name: string;
-  value: string;
-}
-
-interface QueryStatsResponse {
-  stat: Stat[];
-}
+import { queryTraffic, queryAllUsersTraffic } from '../db/index.js';
 
 export interface UserTraffic {
   name: string;
@@ -62,52 +6,39 @@ export interface UserTraffic {
   download: number;
 }
 
-function callQueryStats(pattern: string): Promise<QueryStatsResponse> {
-  return new Promise((resolve) => {
-    const client = getStatsClient();
-    client.QueryStats({ pattern, reset: false }, (err, response) => {
-      if (err) {
-        resolve({ stat: [] });
-        return;
-      }
-      resolve(response ?? { stat: [] });
-    });
-  });
+export type TrafficPeriod = 'hour' | 'day' | 'week' | 'month' | 'year' | 'all';
+
+const PERIOD_MS: Record<Exclude<TrafficPeriod, 'all'>, number> = {
+  hour:  60 * 60 * 1000,
+  day:   24 * 60 * 60 * 1000,
+  week:  7 * 24 * 60 * 60 * 1000,
+  month: 30 * 24 * 60 * 60 * 1000,
+  year:  365 * 24 * 60 * 60 * 1000,
+};
+
+function sinceMs(period: TrafficPeriod): number | undefined {
+  if (period === 'all') return undefined;
+  // For 'hour' use 2× the bucket width to guarantee a full 60-min window
+  // regardless of where within the current hourly bucket we are.
+  const multiplier = period === 'hour' ? 2 : 1;
+  return Date.now() - multiplier * PERIOD_MS[period];
 }
 
-function parseTrafficStats(stats: Stat[]): Map<string, { upload: number; download: number }> {
-  const result = new Map<string, { upload: number; download: number }>();
-
-  for (const stat of stats) {
-    const parts = stat.name.split('>>>');
-    if (parts.length < 4) continue;
-    const username = parts[1];
-    const val = parseInt(stat.value || '0', 10) || 0;
-
-    if (!result.has(username)) result.set(username, { upload: 0, download: 0 });
-    const entry = result.get(username)!;
-    if (stat.name.includes('uplink')) entry.upload = val;
-    if (stat.name.includes('downlink')) entry.download = val;
-  }
-
-  return result;
-}
-
-export async function queryUserStats(xrayUsername: string): Promise<UserTraffic> {
-  const response = await callQueryStats(`user>>>${xrayUsername}>>>traffic`);
-  const statsMap = parseTrafficStats(response.stat);
-  const entry = statsMap.get(xrayUsername);
+export function queryUserStats(xrayUsername: string, period: TrafficPeriod = 'all'): UserTraffic {
+  const record = queryTraffic(xrayUsername, sinceMs(period));
   return {
     name: xrayUsername,
-    upload: entry?.upload ?? 0,
-    download: entry?.download ?? 0,
+    upload: record.upload,
+    download: record.download,
   };
 }
 
-export async function queryAllStats(): Promise<UserTraffic[]> {
-  const response = await callQueryStats('user>>>*>>>traffic');
-  const statsMap = parseTrafficStats(response.stat);
-  return Array.from(statsMap.entries()).map(([name, s]) => ({ name, ...s }));
+export function queryAllStats(period: TrafficPeriod = 'all'): UserTraffic[] {
+  return queryAllUsersTraffic(sinceMs(period)).map(r => ({
+    name: r.xray_username,
+    upload: r.upload,
+    download: r.download,
+  }));
 }
 
 export function formatBytes(bytes: number): string {
@@ -116,3 +47,12 @@ export function formatBytes(bytes: number): string {
   if (bytes >= 1_024)         return `${(bytes / 1_024).toFixed(1)} KB`;
   return `${bytes} B`;
 }
+
+export const PERIOD_LABELS: Record<TrafficPeriod, string> = {
+  hour:  '1ч',
+  day:   '24ч',
+  week:  '7д',
+  month: '30д',
+  year:  '1г',
+  all:   'Всё',
+};

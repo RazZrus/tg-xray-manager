@@ -13,6 +13,7 @@ echo "╚═══════════════════════�
 echo ""
 echo "Will be removed:"
 echo "  • systemd service $SERVICE_NAME"
+echo "  • systemd timer tg-xray-report"
 echo "  • /usr/local/bin/xray-mgr"
 echo "  • $CONFIG_DIR (config and DB)"
 echo "  • $INSTALL_DIR (bot code)"
@@ -22,7 +23,7 @@ echo ""
 read -rp "Continue? [y/N]: " confirm </dev/tty
 [[ "${confirm,,}" == "y" ]] || { echo "Cancelled."; exit 0; }
 
-# Service
+# Bot service
 step "Stopping service"
 if systemctl is-active "$SERVICE_NAME" &>/dev/null; then
   systemctl stop "$SERVICE_NAME"
@@ -30,11 +31,22 @@ fi
 if [[ -f /etc/systemd/system/${SERVICE_NAME}.service ]]; then
   systemctl disable "$SERVICE_NAME"
   rm /etc/systemd/system/${SERVICE_NAME}.service
-  systemctl daemon-reload
   log "Service removed"
 else
   warn "Service not found"
 fi
+
+# Report timer
+step "Removing report timer"
+for unit in tg-xray-report.timer tg-xray-report.service; do
+  if [[ -f /etc/systemd/system/${unit} ]]; then
+    systemctl stop  "${unit}" 2>/dev/null || true
+    systemctl disable "${unit}" 2>/dev/null || true
+    rm /etc/systemd/system/${unit}
+  fi
+done
+systemctl daemon-reload
+log "Report timer removed"
 
 # xray-mgr
 step "Removing xray-mgr"

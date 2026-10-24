@@ -36,5 +36,12 @@ else
   warn "Service not running. Start it: systemctl start $SERVICE_NAME"
 fi
 
+# Reload timer unit in case it changed
+if systemctl list-unit-files tg-xray-report.timer &>/dev/null; then
+  systemctl daemon-reload
+  systemctl restart tg-xray-report.timer
+  log "Report timer reloaded"
+fi
+
 echo ""
 log "Update complete"

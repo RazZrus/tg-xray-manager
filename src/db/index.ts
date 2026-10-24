@@ -39,6 +39,14 @@ function migrate(db: Database.Database): void {
       created_at  INTEGER NOT NULL,
       used_at     INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS traffic_hourly (
+      xray_username TEXT    NOT NULL,
+      hour_ts       INTEGER NOT NULL,
+      upload        INTEGER NOT NULL DEFAULT 0,
+      download      INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (xray_username, hour_ts)
+    );
   `);
 }
 
@@ -57,6 +65,14 @@ let stmts: {
   redeemPromoCode: Database.Statement;
   deletePromoCode: Database.Statement;
   listPromoCodes: Database.Statement;
+  upsertTrafficHourly: Database.Statement;
+  queryTrafficSince: Database.Statement;
+  queryTrafficAll: Database.Statement;
+  queryAllUsersTrafficSince: Database.Statement;
+  queryAllUsersTrafficAll: Database.Statement;
+  queryAllUsersTrafficRange: Database.Statement;
+  queryTrafficRange: Database.Statement;
+  deleteUserTraffic: Database.Statement;
 };
 
 function initStatements(db: Database.Database): void {
@@ -83,6 +99,32 @@ function initStatements(db: Database.Database): void {
     redeemPromoCode: db.prepare('UPDATE promo_codes SET used_by = ?, used_at = ? WHERE code = ? AND used_by IS NULL'),
     deletePromoCode: db.prepare('DELETE FROM promo_codes WHERE code = ?'),
     listPromoCodes: db.prepare('SELECT * FROM promo_codes ORDER BY created_at DESC'),
+    upsertTrafficHourly: db.prepare(`
+      INSERT INTO traffic_hourly (xray_username, hour_ts, upload, download)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(xray_username, hour_ts) DO UPDATE SET
+        upload   = upload   + excluded.upload,
+        download = download + excluded.download
+    `),
+    queryTrafficSince: db.prepare(
+      'SELECT COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly WHERE xray_username = ? AND hour_ts >= ?'
+    ),
+    queryTrafficAll: db.prepare(
+      'SELECT COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly WHERE xray_username = ?'
+    ),
+    queryAllUsersTrafficSince: db.prepare(
+      'SELECT xray_username, COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly WHERE hour_ts >= ? GROUP BY xray_username'
+    ),
+    queryAllUsersTrafficAll: db.prepare(
+      'SELECT xray_username, COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly GROUP BY xray_username'
+    ),
+    queryAllUsersTrafficRange: db.prepare(
+      'SELECT xray_username, COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly WHERE hour_ts >= ? AND hour_ts < ? GROUP BY xray_username'
+    ),
+    queryTrafficRange: db.prepare(
+      'SELECT COALESCE(SUM(upload),0) as upload, COALESCE(SUM(download),0) as download FROM traffic_hourly WHERE xray_username = ? AND hour_ts >= ? AND hour_ts < ?'
+    ),
+    deleteUserTraffic: db.prepare('DELETE FROM traffic_hourly WHERE xray_username = ?'),
   };
 }
 
@@ -162,7 +204,7 @@ export function markPromoCodeUsed(code: string, usedBy: number): void {
   stmts.markPromoCodeUsed.run(usedBy, Date.now(), code);
 }
 
-/** Атомарно использовать промокод. Возвращает true если успешно. */
+/** Atomically redeem a promo code. Returns true on success. */
 export function redeemPromoCode(code: string, usedBy: number): boolean {
   getDb();
   const result = stmts.redeemPromoCode.run(usedBy, Date.now(), code);
@@ -177,4 +219,69 @@ export function deletePromoCode(code: string): void {
 export function listPromoCodes(): PromoCode[] {
   getDb();
   return stmts.listPromoCodes.all() as PromoCode[];
+}
+
+// ─── Traffic log ─────────────────────────────────────────────────────────────
+
+export interface TrafficRecord {
+  upload: number;
+  download: number;
+}
+
+export interface UserTrafficRecord extends TrafficRecord {
+  xray_username: string;
+}
+
+function currentHourTs(): number {
+  const now = Date.now();
+  return now - (now % (60 * 60 * 1000));
+}
+
+export function insertTrafficBatch(entries: { xrayUsername: string; upload: number; download: number }[]): void {
+  const db = getDb();
+  const hourTs = currentHourTs();
+  const tx = db.transaction(() => {
+    for (const e of entries) {
+      stmts.upsertTrafficHourly.run(e.xrayUsername, hourTs, e.upload, e.download);
+    }
+  });
+  tx();
+}
+
+export function queryTraffic(xrayUsername: string, sinceMs?: number): TrafficRecord {
+  getDb();
+  if (sinceMs !== undefined) {
+    return stmts.queryTrafficSince.get(xrayUsername, sinceMs) as TrafficRecord;
+  }
+  return stmts.queryTrafficAll.get(xrayUsername) as TrafficRecord;
+}
+
+export function queryAllUsersTraffic(sinceMs?: number): UserTrafficRecord[] {
+  getDb();
+  if (sinceMs !== undefined) {
+    return stmts.queryAllUsersTrafficSince.all(sinceMs) as UserTrafficRecord[];
+  }
+  return stmts.queryAllUsersTrafficAll.all() as UserTrafficRecord[];
+}
+
+export function queryAllUsersTrafficRange(fromMs: number, toMs: number): UserTrafficRecord[] {
+  getDb();
+  return stmts.queryAllUsersTrafficRange.all(fromMs, toMs) as UserTrafficRecord[];
+}
+
+export function queryTrafficRange(xrayUsername: string, fromMs: number, toMs: number): TrafficRecord {
+  getDb();
+  return stmts.queryTrafficRange.get(xrayUsername, fromMs, toMs) as TrafficRecord;
+}
+
+export function deleteUserTraffic(xrayUsername: string): void {
+  getDb();
+  stmts.deleteUserTraffic.run(xrayUsername);
+}
+
+export function closeDb(): void {
+  if (db) {
+    db.close();
+    (db as unknown) = undefined;
+  }
 }

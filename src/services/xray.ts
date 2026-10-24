@@ -9,11 +9,11 @@ function run(args: string[]): string {
   });
 
   if (result.error) {
-    throw new Error(`xray-mgr не найден: ${result.error.message}`);
+    throw new Error(`xray-mgr not found: ${result.error.message}`);
   }
 
   if (result.status !== 0) {
-    throw new Error(result.stderr?.trim() || `xray-mgr завершился с кодом ${result.status}`);
+    throw new Error(result.stderr?.trim() || `xray-mgr exited with code ${result.status}`);
   }
 
   return result.stdout?.trim() || '';
@@ -55,6 +55,10 @@ export function getUserLink(name: string): string {
   return run(['link', name]);
 }
 
+export function getUserGrpcLink(name: string): string {
+  return run(['link_grpc', name]);
+}
+
 export function getUserQrPath(name: string): string {
   // Генерируем QR в файл PNG для отправки в Telegram
   const link = getUserLink(name);
@@ -66,7 +70,7 @@ export function getUserQrPath(name: string): string {
   });
 
   if (result.status !== 0 || result.error) {
-    throw new Error('qrencode не найден или ошибка генерации QR. Установите: apt-get install qrencode');
+    throw new Error('qrencode not found or failed. Install it: apt-get install qrencode');
   }
 
   return tmpFile;
@@ -101,7 +105,7 @@ export function runShellCommand(command: string): string {
   const stderr = result.stderr?.trim() || '';
   const combined = [stdout, stderr].filter(Boolean).join('\n');
 
-  return combined || `(команда завершилась с кодом ${result.status})`;
+  return combined || `(command exited with code ${result.status})`;
 }
 
 export function rebootServer(): void {

@@ -1,4 +1,5 @@
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
+import type { InlineKeyboardMarkup } from 'grammy/types';
 import fs from 'fs';
 import {
   findUser,
@@ -7,8 +8,8 @@ import {
   upsertUser,
   listAdmins,
 } from '../db/index.js';
-import { addUser, getUserLink, getUserQrPath } from '../services/xray.js';
-import { queryUserStats, formatBytes } from '../services/stats.js';
+import { addUser, getUserLink, getUserGrpcLink, getUserQrPath } from '../services/xray.js';
+import { queryUserStats, formatBytes, PERIOD_LABELS, TrafficPeriod } from '../services/stats.js';
 import { loadConfig } from '../config.js';
 
 // Состояния ожидания ввода
@@ -62,19 +63,20 @@ export function registerUserHandlers(bot: Bot<Context>): void {
       return;
     }
 
-    await ctx.reply('Загружаю статистику...');
-    try {
-      const stats = await queryUserStats(user.xray_username);
-      await ctx.reply(
-        `📊 *${user.xray_username}*\n\n` +
-        `⬆️ Отправлено: ${formatBytes(stats.upload)}\n` +
-        `⬇️ Получено:   ${formatBytes(stats.download)}\n` +
-        `📦 Итого:      ${formatBytes(stats.upload + stats.download)}`,
-        { parse_mode: 'Markdown' }
-      );
-    } catch {
-      await ctx.reply('Не удалось получить статистику. Попробуй позже.');
-    }
+    const text = buildTrafficMessage(user.xray_username, 'all');
+    const keyboard = buildPeriodKeyboard(user.xray_username, 'all');
+    await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+  });
+
+  // Callback: переключение периода для /me
+  bot.callbackQuery(/^my_traffic:(.+):(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const username = ctx.match[1];
+    const period = ctx.match[2] as TrafficPeriod;
+
+    const text = buildTrafficMessage(username, period);
+    const keyboard = buildPeriodKeyboard(username, period);
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: keyboard });
   });
 
   // /link — ссылка для подключения
@@ -152,9 +154,13 @@ export function registerUserHandlers(bot: Bot<Context>): void {
 
       await ctx.reply('Создаю твой VPN-аккаунт...');
       try {
-        const link = addUser(xrayName);
+        if (!redeemPromoCode(pendingCode, telegramId)) {
+          await ctx.reply('Этот промокод уже использован.');
+          return;
+        }
 
-        // Сохраняем пользователя
+        const tcpLink = addUser(xrayName);
+
         upsertUser({
           telegram_id: telegramId,
           telegram_username: ctx.from!.username ?? null,
@@ -163,17 +169,17 @@ export function registerUserHandlers(bot: Bot<Context>): void {
           xray_username: xrayName,
         });
 
-        if (!redeemPromoCode(pendingCode, telegramId)) {
-          await ctx.reply('Этот промокод уже использован.');
-          return;
-        }
+        let grpcLink = '';
+        try { grpcLink = getUserGrpcLink(xrayName); } catch {}
+        const linkText = grpcLink
+          ? `TCP:\n\`${tcpLink}\`\n\ngRPC:\n\`${grpcLink}\``
+          : `\`${tcpLink}\``;
 
         await ctx.reply(
-          `✅ Аккаунт создан!\n\nИмя: \`${xrayName}\`\n\nСсылка для подключения:\n\`${link}\`\n\nИспользуй /qr для QR-кода или /me для статистики.`,
+          `✅ Аккаунт создан!\n\nИмя: \`${xrayName}\`\n\nСсылка для подключения:\n${linkText}\n\nИспользуй /qr для QR-кода или /me для статистики.`,
           { parse_mode: 'Markdown' }
         );
 
-        // Уведомляем всех админов
         await notifyAdmins(
           bot,
           `👤 Новый пользователь зарегистрировался!\n\nTelegram: ${ctx.from!.first_name}${ctx.from!.username ? ` (@${ctx.from!.username})` : ''}\nVPN имя: \`${xrayName}\``,
@@ -187,6 +193,27 @@ export function registerUserHandlers(bot: Bot<Context>): void {
 
     return next();
   });
+}
+
+function buildTrafficMessage(username: string, period: TrafficPeriod): string {
+  const stats = queryUserStats(username, period);
+  const label = PERIOD_LABELS[period];
+  return (
+    `📊 *${username}* — ${label}\n\n` +
+    `⬆️ Отправлено: ${formatBytes(stats.upload)}\n` +
+    `⬇️ Получено:   ${formatBytes(stats.download)}\n` +
+    `📦 Итого:      ${formatBytes(stats.upload + stats.download)}`
+  );
+}
+
+function buildPeriodKeyboard(username: string, current: TrafficPeriod): InlineKeyboardMarkup {
+  const periods: TrafficPeriod[] = ['hour', 'day', 'week', 'month', 'year', 'all'];
+  const kb = new InlineKeyboard();
+  for (const p of periods) {
+    const label = p === current ? `· ${PERIOD_LABELS[p]} ·` : PERIOD_LABELS[p];
+    kb.text(label, `my_traffic:${username}:${p}`);
+  }
+  return kb;
 }
 
 async function notifyAdmins(bot: Bot<Context>, message: string): Promise<void> {

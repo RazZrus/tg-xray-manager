@@ -3,50 +3,50 @@ import { saveConfig, type Config } from './config.js';
 import { execSync } from 'child_process';
 
 export async function runWizard(): Promise<Config> {
-  console.log('\n=== tg-xray-bot — первоначальная настройка ===\n');
+  console.log('\n=== tg-xray-bot — initial setup ===\n');
 
   const answers = await prompts(
     [
       {
         type: 'text',
         name: 'botToken',
-        message: 'Telegram Bot Token (получить у @BotFather):',
-        validate: (v: string) => v.trim().length > 10 || 'Введите корректный токен',
+        message: 'Telegram Bot Token (get from @BotFather):',
+        validate: (v: string) => v.trim().length > 10 || 'Enter a valid token',
       },
       {
         type: 'text',
         name: 'adminId',
-        message: 'Ваш Telegram ID (узнать у @userinfobot):',
-        validate: (v: string) => /^\d+$/.test(v.trim()) || 'Только цифры',
+        message: 'Your Telegram ID (get from @userinfobot):',
+        validate: (v: string) => /^\d+$/.test(v.trim()) || 'Digits only',
       },
       {
         type: 'text',
         name: 'serverIp',
-        message: 'Внешний IP сервера (оставьте пустым для автоопределения):',
+        message: 'Server public IP (leave empty for auto-detection):',
         initial: detectServerIp(),
       },
       {
         type: 'number',
         name: 'xrayPort',
-        message: 'Порт xray:',
+        message: 'xray port:',
         initial: 443,
       },
       {
         type: 'text',
         name: 'sni',
-        message: 'SNI (домен для маскировки):',
+        message: 'SNI (masquerade domain):',
         initial: 'www.microsoft.com',
       },
       {
         type: 'number',
         name: 'statsPort',
-        message: 'Порт gRPC Stats API xray:',
+        message: 'xray gRPC Stats API port:',
         initial: 10085,
       },
     ],
     {
       onCancel: () => {
-        console.log('\nНастройка отменена.');
+        console.log('\nSetup cancelled.');
         process.exit(0);
       },
     }
@@ -62,7 +62,7 @@ export async function runWizard(): Promise<Config> {
   };
 
   saveConfig(config);
-  console.log('\nКонфиг сохранён.\n');
+  console.log('\nConfig saved.\n');
 
   return config;
 }

@@ -161,7 +161,7 @@ install_xray() {
 generate_xray_config() {
   local server_ip="$1" port="${2:-443}" sni="${3:-www.microsoft.com}"
 
-  step "Generating xray config (VLESS+REALITY+TCP+gRPC Stats)"
+  step "Generating xray config (VLESS+REALITY+TCP+gRPC)"
 
   local keypair private_key public_key short_id
   keypair=$(xray x25519)
@@ -175,11 +175,19 @@ generate_xray_config() {
 {
   "log": {
     "loglevel": "warning",
-    "access": "/var/log/xray/access.log",
-    "error": "/var/log/xray/error.log"
+    "access": "/var/log/xray/access.log"
+  },
+  "dns": {
+    "servers": [
+      {
+        "address": "https://dns.adguard-dns.com/dns-query",
+        "domains": ["geosite:geolocation-!cn"]
+      },
+      "localhost"
+    ]
   },
   "stats": {},
-  "api": { "tag": "api", "services": ["StatsService"] },
+  "api": { "tag": "api", "services": ["StatsService", "HandlerService"] },
   "policy": {
     "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
     "system": {
@@ -189,7 +197,7 @@ generate_xray_config() {
   },
   "inbounds": [
     {
-      "tag": "vless-in",
+      "tag": "vless-reality",
       "listen": "0.0.0.0",
       "port": ${port},
       "protocol": "vless",
@@ -207,10 +215,40 @@ generate_xray_config() {
           "shortIds": ["${short_id}"]
         }
       },
-      "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic", "fakedns"],
+        "metadataOnly": false
+      }
     },
     {
-      "tag": "api-in",
+      "tag": "vless-grpc",
+      "listen": "0.0.0.0",
+      "port": 8443,
+      "protocol": "vless",
+      "settings": { "clients": [], "decryption": "none" },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${sni}:443",
+          "xver": 0,
+          "serverNames": ["${sni}"],
+          "privateKey": "${private_key}",
+          "publicKey": "${public_key}",
+          "shortIds": ["${short_id}"]
+        },
+        "grpcSettings": { "serviceName": "vless-grpc" }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic", "fakedns"],
+        "metadataOnly": false
+      }
+    },
+    {
+      "tag": "api",
       "listen": "127.0.0.1",
       "port": 10085,
       "protocol": "dokodemo-door",
@@ -218,16 +256,37 @@ generate_xray_config() {
     }
   ],
   "outbounds": [
-    { "tag": "direct",  "protocol": "freedom",   "settings": {} },
-    { "tag": "blocked", "protocol": "blackhole",  "settings": {} }
+    { "tag": "direct",   "protocol": "freedom",  "settings": {} },
+    { "tag": "block",    "protocol": "blackhole", "settings": {} },
+    {
+      "tag": "dns-out",
+      "protocol": "dns"
+    }
   ],
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
-      { "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" },
-      { "type": "field", "ip": ["geoip:ru","geoip:cn","geoip:by"], "outboundTag": "blocked" },
-      { "type": "field", "domain": ["geosite:category-ads-all"],   "outboundTag": "blocked" },
-      { "type": "field", "protocol": ["bittorrent"],                "outboundTag": "blocked" }
+      { "type": "field", "inboundTag": ["api"], "outboundTag": "api" },
+      { "type": "field", "port": "53", "outboundTag": "dns-out" },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:tld-ru",
+          "geosite:tld-cn",
+          "geosite:geolocation-cn",
+          "domain:by",
+          "domain:belta.by",
+          "domain:tvr.by"
+        ],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "ip": ["geoip:ru", "geoip:cn", "geoip:by"],
+        "outboundTag": "block"
+      },
+      { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" },
+      { "type": "field", "protocol": ["bittorrent"],              "outboundTag": "block" }
     ]
   }
 }
@@ -253,7 +312,7 @@ patch_xray_config_for_stats() {
   jq '
     . + {
       "stats": {},
-      "api": { "tag": "api", "services": ["StatsService"] },
+      "api": { "tag": "api", "services": ["StatsService", "HandlerService"] },
       "policy": {
         "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
         "system": {
@@ -263,11 +322,11 @@ patch_xray_config_for_stats() {
       }
     }
     | .inbounds += [{
-        "tag": "api-in", "listen": "127.0.0.1", "port": 10085,
+        "tag": "api", "listen": "127.0.0.1", "port": 10085,
         "protocol": "dokodemo-door", "settings": { "address": "127.0.0.1" }
       }]
     | .routing.rules = ([{
-        "type": "field", "inboundTag": ["api-in"], "outboundTag": "api"
+        "type": "field", "inboundTag": ["api"], "outboundTag": "api"
       }] + (.routing.rules // []))
   ' "$config" > "$tmp"
   cp "$tmp" "$config" && rm "$tmp"
@@ -318,11 +377,15 @@ install_bot() {
   log "tg-xray-manager installed in $INSTALL_DIR"
 }
 
-# ─── systemd service ────────────────────────────────────────────────────────
+# ─── systemd units ──────────────────────────────────────────────────────────
 
 setup_systemd_service() {
-  step "Setting up systemd service"
+  step "Setting up systemd units"
 
+  local node_bin
+  node_bin=$(command -v node)
+
+  # ── Bot service ──────────────────────────────────────────────────────────
   cat > /etc/systemd/system/tg-xray-bot.service <<EOF
 [Unit]
 Description=Telegram Xray VPN Manager Bot
@@ -331,7 +394,7 @@ After=network.target xray.service
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=$(command -v node) ${INSTALL_DIR}/dist/index.js
+ExecStart=${node_bin} ${INSTALL_DIR}/dist/index.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
@@ -340,9 +403,36 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 EOF
 
+  # ── Daily report — oneshot service ───────────────────────────────────────
+  cat > /etc/systemd/system/tg-xray-report.service <<EOF
+[Unit]
+Description=Daily xray traffic report (oneshot)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=${node_bin} ${INSTALL_DIR}/dist/report.js
+StandardOutput=journal
+StandardError=journal
+EOF
+
+  # ── Daily report — timer (fires at midnight, catches missed runs) ─────────
+  cat > /etc/systemd/system/tg-xray-report.timer <<EOF
+[Unit]
+Description=Send daily xray traffic report at midnight
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
   systemctl daemon-reload
   systemctl enable tg-xray-bot
-  log "Service tg-xray-bot created and enabled"
+  systemctl enable --now tg-xray-report.timer
+  log "Services: tg-xray-bot enabled, tg-xray-report.timer enabled"
 }
 
 # ─── Bot configuration ──────────────────────────────────────────────────────
@@ -368,8 +458,8 @@ configure_bot() {
   # Detect server_ip and xray_port from xray config if available
   local server_ip xray_port sni
   if [[ -f /usr/local/etc/xray/config.json ]]; then
-    xray_port=$(jq -r '[.inbounds[] | select(.protocol == "vless")][0].port // 443' /usr/local/etc/xray/config.json)
-    sni=$(jq -r '[.inbounds[] | select(.protocol == "vless")][0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"' /usr/local/etc/xray/config.json)
+    xray_port=$(jq -r '[.inbounds[] | select(.tag == "vless-reality")][0].port // 443' /usr/local/etc/xray/config.json)
+    sni=$(jq -r '[.inbounds[] | select(.tag == "vless-reality")][0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"' /usr/local/etc/xray/config.json)
   else
     xray_port=443
     sni="www.microsoft.com"

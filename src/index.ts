@@ -1,15 +1,37 @@
 import { configExists } from './config.js';
 import { runWizard } from './wizard.js';
-import { startBot } from './bot.js';
+import { createBot } from './bot.js';
+import { startTrafficCollector, stopTrafficCollector } from './services/traffic-collector.js';
+import { checkForUpdates } from './services/version.js';
+import { closeDb } from './db/index.js';
 
 async function main(): Promise<void> {
   if (!configExists()) {
     await runWizard();
   }
-  await startBot();
+
+  const bot = createBot();
+
+  startTrafficCollector();
+
+  function shutdown() {
+    stopTrafficCollector();
+    closeDb();
+    process.exit(0);
+  }
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  checkForUpdates(bot).catch(() => {});
+
+  console.log('Bot started. Press Ctrl+C to stop.');
+  await bot.start({
+    onStart: (info) => console.log(`Bot @${info.username} started`),
+  });
 }
 
 main().catch((err) => {
-  console.error('Критическая ошибка:', err);
+  console.error('Fatal error:', err);
   process.exit(1);
 });

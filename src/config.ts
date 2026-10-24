@@ -24,7 +24,7 @@ export function loadConfig(): Config {
   if (cachedConfig) return cachedConfig;
 
   if (!configExists()) {
-    throw new Error(`Конфиг не найден: ${CONFIG_PATH}. Запустите tg-xray-bot без аргументов для настройки.`);
+    throw new Error(`Config not found: ${CONFIG_PATH}. Run tg-xray-bot without arguments to configure.`);
   }
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
   cachedConfig = JSON.parse(raw) as Config;

@@ -37,25 +37,28 @@ require_grpcurl() {
 # Get value from xray config by jq path
 cfg() { jq -r "$1" "$XRAY_CONFIG"; }
 
-# jq path to vless inbound (not api-in)
-VLESS='([.inbounds[] | select(.protocol == "vless")] | first)'
+# jq paths by tag
+VLESS='([.inbounds[] | select(.tag == "vless-reality")] | first)'
+VLESS_GRPC='([.inbounds[] | select(.tag == "vless-grpc")] | first)'
 
 # Get IP/port for vless link
 get_server_ip() {
   curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
-get_xray_port() { cfg "${VLESS}.port // 443"; }
-get_sni() { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
-get_short_id() { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
+get_xray_port()  { cfg "${VLESS}.port // 443"; }
+get_grpc_port()  { cfg "${VLESS_GRPC}.port // 8443"; }
+get_sni()        { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
+get_short_id()   { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
+get_public_key() { cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty"; }
 
-# Find user by name, return UUID
+# Find user by name in TCP inbound, return UUID
 get_uuid() {
   local name="$1"
   jq -r --arg n "$name" "${VLESS}.settings.clients[] | select(.email == \$n) | .id" "$XRAY_CONFIG"
 }
 
-# Build vless:// link
+# Build TCP vless:// link
 make_link() {
   local name="$1"
   local uuid
@@ -67,14 +70,30 @@ make_link() {
   port=$(get_xray_port)
   sni=$(get_sni)
   short_id=$(get_short_id)
-  public_key=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
+  public_key=$(get_public_key)
 
   echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${name}"
 }
 
+# Build gRPC vless:// link
+make_grpc_link() {
+  local name="$1"
+  local uuid
+  uuid=$(get_uuid "$name")
+  [[ -n "$uuid" ]] || die "User '$name' not found"
+
+  local ip port sni short_id public_key
+  ip=$(get_server_ip)
+  port=$(get_grpc_port)
+  sni=$(get_sni)
+  short_id=$(get_short_id)
+  public_key=$(get_public_key)
+
+  echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${name}-grpc"
+}
+
 # ─── Stats API (gRPC) ───────────────────────────────────────────────────────
 
-# Query Stats API via grpcurl
 PROTO_DIR="/opt/tg-xray-manager/proto"
 
 stats_query() {
@@ -86,7 +105,6 @@ stats_query() {
     xray.app.stats.command.StatsService/QueryStats 2>/dev/null || echo '{}'
 }
 
-# Get user traffic (upload + download in bytes)
 get_user_traffic() {
   local name="$1"
   local result
@@ -97,10 +115,8 @@ get_user_traffic() {
   echo "$up $down"
 }
 
-# Format bytes to human-readable
 format_bytes() {
   local bytes="${1:-0}"
-  # strip non-numeric chars (grpcurl may return a string)
   bytes=$(echo "$bytes" | tr -dc '0-9' || echo 0)
   bytes=${bytes:-0}
   if   (( bytes >= 1073741824 )); then printf "%.1f GB" "$(echo "scale=1; $bytes/1073741824" | bc)"
@@ -110,6 +126,39 @@ format_bytes() {
   fi
 }
 
+# ─── Handler API (hot add/remove without restart) ───────────────────────────
+
+# api_add_user <tag> <email> <uuid> [flow]
+api_add_user() {
+  local tag="$1" email="$2" uuid="$3" flow="${4:-}"
+  local account
+  if [[ -n "$flow" ]]; then
+    account=$(printf '{"@type":"type.googleapis.com/xray.proxy.vless.Account","id":"%s","flow":"%s"}' "$uuid" "$flow")
+  else
+    account=$(printf '{"@type":"type.googleapis.com/xray.proxy.vless.Account","id":"%s"}' "$uuid")
+  fi
+  $XRAY_BIN api adu --server="127.0.0.1:${STATS_PORT}" <<EOF
+{
+  "inboundTag": "${tag}",
+  "user": {
+    "email": "${email}",
+    "level": 0,
+    "account": ${account}
+  }
+}
+EOF
+}
+
+api_remove_user() {
+  local tag="$1" email="$2"
+  $XRAY_BIN api rmu --server="127.0.0.1:${STATS_PORT}" <<EOF
+{
+  "inboundTag": "${tag}",
+  "email": "${email}"
+}
+EOF
+}
+
 # ─── Commands ───────────────────────────────────────────────────────────────
 
 cmd_list() {
@@ -117,7 +166,7 @@ cmd_list() {
   require_grpcurl
 
   local names
-  names=$(jq -r '[.inbounds[] | select(.protocol == "vless")] | first | .settings.clients[]?.email // empty' "$XRAY_CONFIG")
+  names=$(jq -r "${VLESS}.settings.clients[]?.email // empty" "$XRAY_CONFIG")
 
   if [[ -z "$names" ]]; then
     echo "No users found."
@@ -149,18 +198,23 @@ cmd_add() {
   local uuid
   uuid=$($XRAY_BIN uuid)
 
+  # Save to config (persistence) — add to both TCP and gRPC inbounds
   local tmp
   tmp=$(mktemp)
-  jq --arg n "$name" --arg u "$uuid" \
-    '(.inbounds[] | select(.protocol == "vless") | .settings.clients) += [{"id": $u, "email": $n, "flow": "xtls-rprx-vision"}]' \
-    "$XRAY_CONFIG" > "$tmp"
+  jq --arg n "$name" --arg u "$uuid" '
+    (.inbounds[] | select(.tag == "vless-reality") | .settings.clients) += [{"id": $u, "email": $n, "flow": "xtls-rprx-vision"}]
+    | (.inbounds[] | select(.tag == "vless-grpc")  | .settings.clients) += [{"id": $u, "email": $n}]
+  ' "$XRAY_CONFIG" > "$tmp"
   cp "$tmp" "$XRAY_CONFIG"
   rm "$tmp"
 
-  systemctl restart xray
+  # Add at runtime via API (no restart)
+  api_add_user "vless-reality" "$name" "$uuid" "xtls-rprx-vision" 2>/dev/null || true
+  api_add_user "vless-grpc"    "$name" "$uuid" ""                 2>/dev/null || true
 
   echo "User '$name' created (UUID: $uuid)"
   make_link "$name"
+  make_grpc_link "$name"
 }
 
 cmd_del() {
@@ -174,15 +228,20 @@ cmd_del() {
   existing=$(get_uuid "$name")
   [[ -n "$existing" ]] || die "User '$name' not found"
 
+  # Remove from both inbounds in config
   local tmp
   tmp=$(mktemp)
-  jq --arg n "$name" \
-    'del(.inbounds[] | select(.protocol == "vless") | .settings.clients[] | select(.email == $n))' \
-    "$XRAY_CONFIG" > "$tmp"
+  jq --arg n "$name" '
+    del(.inbounds[] | select(.tag == "vless-reality") | .settings.clients[] | select(.email == $n))
+    | del(.inbounds[] | select(.tag == "vless-grpc")  | .settings.clients[] | select(.email == $n))
+  ' "$XRAY_CONFIG" > "$tmp"
   cp "$tmp" "$XRAY_CONFIG"
   rm "$tmp"
 
-  systemctl restart xray
+  # Remove at runtime via API (no restart)
+  api_remove_user "vless-reality" "$name" 2>/dev/null || true
+  api_remove_user "vless-grpc"    "$name" 2>/dev/null || true
+
   echo "User '$name' deleted"
 }
 
@@ -193,6 +252,13 @@ cmd_link() {
   make_link "$name"
 }
 
+cmd_link_grpc() {
+  require_jq
+  local name="$1"
+  [[ -n "$name" ]] || die "Usage: xray-mgr link_grpc <name>"
+  make_grpc_link "$name"
+}
+
 cmd_qr() {
   require_jq
   require_qrencode
@@ -200,6 +266,18 @@ cmd_qr() {
   [[ -n "$name" ]] || die "Usage: xray-mgr qr <name>"
   local link
   link=$(make_link "$name")
+  echo "$link" | qrencode -t ANSIUTF8
+  echo ""
+  echo "$link"
+}
+
+cmd_qr_grpc() {
+  require_jq
+  require_qrencode
+  local name="$1"
+  [[ -n "$name" ]] || die "Usage: xray-mgr qr_grpc <name>"
+  local link
+  link=$(make_grpc_link "$name")
   echo "$link" | qrencode -t ANSIUTF8
   echo ""
   echo "$link"
@@ -279,8 +357,10 @@ Commands:
   list                        List users with traffic stats
   add <name>                  Add user (requires root)
   del <name>                  Delete user (requires root)
-  link <name>                 Get vless:// link
-  qr <name>                   QR code for connection
+  link <name>                 Get TCP vless:// link
+  link_grpc <name>            Get gRPC vless:// link
+  qr <name>                   QR code for TCP connection
+  qr_grpc <name>              QR code for gRPC connection
   stats <name>                Traffic for a specific user
   blocked [user] [period]     Block stats (period: hour/day/week/month/year)
   status                      xray service status
@@ -292,14 +372,16 @@ COMMAND="${1:-}"
 shift || true
 
 case "$COMMAND" in
-  list)     cmd_list ;;
-  add)      cmd_add "${1:-}" ;;
-  del)      cmd_del "${1:-}" ;;
-  link)     cmd_link "${1:-}" ;;
-  qr)       cmd_qr "${1:-}" ;;
-  stats)    cmd_stats "${1:-}" ;;
-  blocked)  cmd_blocked "${1:-}" "${2:-}" ;;
-  status)   cmd_status ;;
-  restart)  cmd_restart ;;
-  *)        usage; exit 1 ;;
+  list)      cmd_list ;;
+  add)       cmd_add "${1:-}" ;;
+  del)       cmd_del "${1:-}" ;;
+  link)      cmd_link "${1:-}" ;;
+  link_grpc) cmd_link_grpc "${1:-}" ;;
+  qr)        cmd_qr "${1:-}" ;;
+  qr_grpc)   cmd_qr_grpc "${1:-}" ;;
+  stats)     cmd_stats "${1:-}" ;;
+  blocked)   cmd_blocked "${1:-}" "${2:-}" ;;
+  status)    cmd_status ;;
+  restart)   cmd_restart ;;
+  *)         usage; exit 1 ;;
 esac
