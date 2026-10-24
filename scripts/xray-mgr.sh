@@ -64,14 +64,14 @@ get_grpc_port()  { cfg "${VLESS_GRPC}.port // 8443"; }
 get_sni()        { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
 get_short_id()   { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
 get_public_key() {
-  local pk
-  pk=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
-  if [[ -z "$pk" ]]; then
-    local priv
-    priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey")
-    pk=$($XRAY_BIN x25519 -i "$priv" 2>/dev/null | grep 'Public key' | awk '{print $NF}')
+  local bot_config="$HOME/.tg-xray-bot/config.json"
+  if [[ -f "$bot_config" ]]; then
+    local pk
+    pk=$(jq -r '.publicKey // empty' "$bot_config" 2>/dev/null)
+    [[ -n "$pk" ]] && echo "$pk" && return
   fi
-  echo "$pk"
+  # Fallback: read directly from xray config
+  cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty"
 }
 
 # Find user by name in TCP inbound, return UUID

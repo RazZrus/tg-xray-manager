@@ -456,14 +456,16 @@ configure_bot() {
   prompt_input stats_port  "gRPC Stats API port" "10085"
   prompt_input server_name "Server display name (shown in VPN client)" "$(hostname)"
 
-  # Detect server_ip and xray_port from xray config if available
-  local server_ip xray_port sni
+  # Detect server_ip, xray_port, sni and publicKey from xray config if available
+  local server_ip xray_port sni public_key
   if [[ -f /usr/local/etc/xray/config.json ]]; then
     xray_port=$(jq -r '[.inbounds[] | select(.tag == "vless-reality")][0].port // 443' /usr/local/etc/xray/config.json)
     sni=$(jq -r '[.inbounds[] | select(.tag == "vless-reality")][0].streamSettings.realitySettings.serverNames[0] // "www.microsoft.com"' /usr/local/etc/xray/config.json)
+    public_key=$(jq -r '[.inbounds[] | select(.tag == "vless-reality")][0].streamSettings.realitySettings.publicKey // empty' /usr/local/etc/xray/config.json)
   else
     xray_port=443
     sni="www.microsoft.com"
+    public_key=""
   fi
   server_ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
 
@@ -476,7 +478,8 @@ configure_bot() {
   "xrayPort": ${xray_port},
   "sni": "${sni}",
   "statsPort": ${stats_port},
-  "serverName": "${server_name:-$(hostname)}"
+  "serverName": "${server_name:-$(hostname)}",
+  "publicKey": "${public_key}"
 }
 EOF
   chmod 600 "$config_path"

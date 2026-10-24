@@ -1,7 +1,21 @@
 import prompts from 'prompts'
 import { saveConfig, type Config } from './config.js'
 import { execSync } from 'child_process'
+import fs from 'fs'
 import os from 'os'
+
+const XRAY_CONFIG = '/usr/local/etc/xray/config.json'
+
+function readXrayPublicKey(): string {
+  try {
+    const raw = fs.readFileSync(XRAY_CONFIG, 'utf-8')
+    const cfg = JSON.parse(raw) as { inbounds?: { tag: string; streamSettings?: { realitySettings?: { publicKey?: string } } }[] }
+    const inbound = cfg.inbounds?.find(i => i.tag === 'vless-reality')
+    return inbound?.streamSettings?.realitySettings?.publicKey ?? ''
+  } catch {
+    return ''
+  }
+}
 
 export async function runWizard(): Promise<Config> {
   console.log('\n=== tg-xray-bot — initial setup ===\n')
@@ -67,6 +81,7 @@ export async function runWizard(): Promise<Config> {
     sni: answers.sni.trim(),
     statsPort: answers.statsPort,
     serverName: answers.serverName.trim() || os.hostname(),
+    publicKey: readXrayPublicKey(),
   }
 
   saveConfig(config)

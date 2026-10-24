@@ -13,6 +13,7 @@ export interface Config {
   sni: string;
   statsPort: number;
   serverName: string;
+  publicKey: string;
 }
 
 let cachedConfig: Config | null = null
