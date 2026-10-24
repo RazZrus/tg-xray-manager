@@ -106,7 +106,7 @@ sync_bot_config() {
 
 # All helpers read from config.json (kept current by sync_bot_config above)
 get_server_ip()   { curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'; }
-get_server_name() { jq -r '.serverName // empty' "$BOT_CONFIG" 2>/dev/null || hostname; }
+get_server_name() { local n; n=$(jq -r '.serverName // empty' "$BOT_CONFIG" 2>/dev/null); echo "${n:-$(hostname)}"; }
 get_xray_port()   { jq -r '.xrayPort   // 443'   "$BOT_CONFIG" 2>/dev/null; }
 get_grpc_port()   { cfg "${VLESS_GRPC}.port // 8443"; }
 get_sni()         { jq -r '.sni        // empty' "$BOT_CONFIG" 2>/dev/null; }
@@ -139,7 +139,7 @@ make_link() {
   [[ -n "$sni" ]]        || die "Could not determine SNI"
   [[ -n "$public_key" ]] || die "Public key not found. Check ~/.tg-xray-bot/config.json or xray config privateKey"
 
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${display_name}"
+  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${display_name} [TCP]"
 }
 
 # Build gRPC vless:// link
@@ -162,7 +162,7 @@ make_grpc_link() {
   [[ -n "$sni" ]]        || die "Could not determine SNI"
   [[ -n "$public_key" ]] || die "Public key not found. Check ~/.tg-xray-bot/config.json or xray config privateKey"
 
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${display_name} (gRPC)"
+  echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${display_name} [gRPC]"
 }
 
 # ─── Stats API (gRPC) ───────────────────────────────────────────────────────
@@ -332,6 +332,18 @@ cmd_link_grpc() {
   make_grpc_link "$name"
 }
 
+# Human-readable: both links with labels
+cmd_links() {
+  require_jq
+  local name="$1"
+  [[ -n "$name" ]] || die "Usage: xray-mgr links <name>"
+  echo "TCP (основной):"
+  make_link "$name"
+  echo ""
+  echo "gRPC (резервный):"
+  make_grpc_link "$name"
+}
+
 cmd_qr() {
   require_jq
   require_qrencode
@@ -452,8 +464,9 @@ Commands:
   list                        List users with traffic stats
   add <name>                  Add user (requires root)
   del <name>                  Delete user (requires root)
-  link <name>                 Get TCP vless:// link
-  link_grpc <name>            Get gRPC vless:// link
+  link <name>                 Get TCP vless:// link (machine-readable)
+  link_grpc <name>            Get gRPC vless:// link (machine-readable)
+  links <name>                Get both links with labels (TCP=основной, gRPC=резервный)
   qr <name>                   QR code for TCP connection
   qr_grpc <name>              QR code for gRPC connection
   stats <name>                Traffic for a specific user
@@ -476,6 +489,7 @@ case "$COMMAND" in
   del)       cmd_del "${1:-}" ;;
   link)      cmd_link "${1:-}" ;;
   link_grpc) cmd_link_grpc "${1:-}" ;;
+  links)     cmd_links "${1:-}" ;;
   qr)        cmd_qr "${1:-}" ;;
   qr_grpc)   cmd_qr_grpc "${1:-}" ;;
   stats)     cmd_stats "${1:-}" ;;

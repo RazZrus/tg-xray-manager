@@ -54,5 +54,13 @@ function migrate(db: Database.Database): void {
       download      INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (xray_username, hour_ts)
     );
+
+    CREATE TABLE IF NOT EXISTS user_settings (
+      telegram_id    INTEGER PRIMARY KEY,
+      lang           TEXT    NOT NULL DEFAULT 'ru',
+      mini_ui        INTEGER NOT NULL DEFAULT 0,
+      midnight_stats INTEGER NOT NULL DEFAULT 0,
+      display_name   TEXT
+    );
   `)
 }
