@@ -61,7 +61,7 @@ sync_bot_config() {
   stats_port=$(jq -r '([.inbounds[] | select(.tag == "api")] | first).port // 10085' "$XRAY_CONFIG")
 
   if [[ -n "$priv" ]]; then
-    pub=$("$XRAY_BIN" x25519 -i "$priv" 2>/dev/null | grep -i 'public key' | awk '{print $NF}')
+    pub=$("$XRAY_BIN" x25519 -i "$priv" 2>/dev/null | grep -i 'public key' | awk '{print $NF}' || true)
   fi
 
   local tmp
@@ -427,7 +427,7 @@ Commands:
 EOF
 }
 
-sync_bot_config
+sync_bot_config || true
 
 COMMAND="${1:-}"
 shift || true
