@@ -1,6 +1,7 @@
 import prompts from 'prompts';
 import { saveConfig, type Config } from './config.js';
 import { execSync } from 'child_process';
+import os from 'os';
 
 export async function runWizard(): Promise<Config> {
   console.log('\n=== tg-xray-bot — initial setup ===\n');
@@ -43,6 +44,12 @@ export async function runWizard(): Promise<Config> {
         message: 'xray gRPC Stats API port:',
         initial: 10085,
       },
+      {
+        type: 'text',
+        name: 'serverName',
+        message: 'Server display name (shown in VPN client as config name):',
+        initial: os.hostname(),
+      },
     ],
     {
       onCancel: () => {
@@ -59,6 +66,7 @@ export async function runWizard(): Promise<Config> {
     xrayPort: answers.xrayPort,
     sni: answers.sni.trim(),
     statsPort: answers.statsPort,
+    serverName: answers.serverName.trim() || os.hostname(),
   };
 
   saveConfig(config);

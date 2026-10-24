@@ -55,20 +55,20 @@ select_option() {
   done
 
   while true; do
-    local key
-    IFS= read -rsn1 key </dev/tty
+    local key rest
+    IFS= read -rsn1 key </dev/tty || true
 
     if [[ "$key" == $'\x1b' ]]; then
-      read -rsn2 rest </dev/tty
-      key+="$rest"
+      IFS= read -rsn2 -t 0.1 rest </dev/tty || true
+      key+="${rest:-}"
     fi
 
     case "$key" in
       $'\x1b[A'|k) # Up
-        (( selected > 0 )) && (( selected-- ))
+        if (( selected > 0 )); then selected=$(( selected - 1 )); fi
         ;;
       $'\x1b[B'|j) # Down
-        (( selected < count - 1 )) && (( selected++ ))
+        if (( selected < count - 1 )); then selected=$(( selected + 1 )); fi
         ;;
       '') # Enter
         break
@@ -450,10 +450,11 @@ configure_bot() {
 
   step "Configuring Telegram bot"
 
-  local bot_token admin_id stats_port
-  prompt_input bot_token  "Bot Token (from @BotFather)" ""
-  prompt_input admin_id   "Your Telegram ID (get it from @userinfobot)" ""
-  prompt_input stats_port "gRPC Stats API port" "10085"
+  local bot_token admin_id stats_port server_name
+  prompt_input bot_token   "Bot Token (from @BotFather)" ""
+  prompt_input admin_id    "Your Telegram ID (get it from @userinfobot)" ""
+  prompt_input stats_port  "gRPC Stats API port" "10085"
+  prompt_input server_name "Server display name (shown in VPN client)" "$(hostname)"
 
   # Detect server_ip and xray_port from xray config if available
   local server_ip xray_port sni
@@ -474,7 +475,8 @@ configure_bot() {
   "serverIp": "${server_ip}",
   "xrayPort": ${xray_port},
   "sni": "${sni}",
-  "statsPort": ${stats_port}
+  "statsPort": ${stats_port},
+  "serverName": "${server_name:-$(hostname)}"
 }
 EOF
   chmod 600 "$config_path"

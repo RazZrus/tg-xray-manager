@@ -1,4 +1,4 @@
-import { Bot, Context, InlineKeyboard, Keyboard } from 'grammy';
+import { Bot, Context, InlineKeyboard } from 'grammy';
 import crypto from 'crypto';
 import {
   listUsers,
@@ -30,16 +30,20 @@ import {
 } from '../services/stats.js';
 import { loadConfig } from '../config.js';
 import { escapeHtml } from '../utils.js';
+import { flushTraffic } from '../services/traffic-collector.js';
 
-const awaitingShell = new Set<number>();
-const awaitingAddUser = new Set<number>();
+// ─── State ───────────────────────────────────────────────────────────────────
+
+const awaitingShell    = new Set<number>();
+const awaitingAddUser  = new Set<number>();
 
 function addWithTTL(set: Set<number>, id: number, ttlMs = 5 * 60_000): void {
   set.add(id);
   setTimeout(() => set.delete(id), ttlMs);
 }
 
-const menuMessageId = new Map<number, number>();
+/** Message ID of the persistent admin panel per user */
+const panelMessageId = new Map<number, number>();
 
 export function isAdmin(telegramId: number): boolean {
   const config = loadConfig();
@@ -48,57 +52,66 @@ export function isAdmin(telegramId: number): boolean {
   return user?.is_admin === 1;
 }
 
-// ─── Keyboards ───────────────────────────────────────────────────────────────
-
-const mainKeyboard = new Keyboard()
-  .text('👥 Пользователи').text('🎫 Промокоды').row()
-  .text('⚙️ Сервер').text('💻 Терминал').row()
-  .resized();
-
-const usersKeyboard = new Keyboard()
-  .text('📋 Список').text('➕ Добавить').text('🗑 Удалить').row()
-  .text('◀️ Назад').row()
-  .resized();
-
-const promoKeyboard = new Keyboard()
-  .text('🎫 Создать').text('📋 Список').text('🗑 Удалить').row()
-  .text('◀️ Назад').row()
-  .resized();
-
-const serverKeyboard = new Keyboard()
-  .text('📊 Статус').text('🔄 Рестарт').row()
-  .text('🔁 Перезагрузка').text('⛔ Выключение').row()
-  .text('◀️ Назад').row()
-  .resized();
-
-// ─── Utilities ───────────────────────────────────────────────────────────────
+// ─── Inline keyboards ────────────────────────────────────────────────────────
 
 const HTML = { parse_mode: 'HTML' as const };
 
-async function sendOrEditMenu(ctx: Context, text: string, keyboard: Keyboard): Promise<void> {
-  const chatId = ctx.chat!.id;
-  const oldMsgId = menuMessageId.get(ctx.from!.id);
+const mainKb = new InlineKeyboard()
+  .text('👥 Пользователи', 'admin:users').text('🎫 Промокоды', 'admin:promo').row()
+  .text('⚙️ Сервер',        'admin:server').text('💻 Терминал',  'admin:terminal');
 
-  const sent = await ctx.reply(text, { ...HTML, reply_markup: keyboard });
-  menuMessageId.set(ctx.from!.id, sent.message_id);
+const usersKb = new InlineKeyboard()
+  .text('📋 Список', 'admin:users:list').text('➕ Добавить', 'admin:users:add').text('🗑 Удалить', 'admin:users:del').row()
+  .text('◀️ Назад',  'admin:main');
 
-  if (oldMsgId) {
-    try { await ctx.api.deleteMessage(chatId, oldMsgId); } catch {}
-  }
-}
+const promoKb = new InlineKeyboard()
+  .text('🎫 Создать', 'admin:promo:create').text('📋 Список', 'admin:promo:list').text('🗑 Удалить', 'admin:promo:del').row()
+  .text('◀️ Назад',   'admin:main');
 
-async function deleteUserMessage(ctx: Context): Promise<void> {
-  try {
-    if (ctx.message) {
-      await ctx.api.deleteMessage(ctx.chat!.id, ctx.message.message_id);
+const serverKb = new InlineKeyboard()
+  .text('📊 Статус', 'admin:server:status').text('🔄 Рестарт', 'admin:server:restart').row()
+  .text('🔁 Перезагрузка', 'admin:server:reboot').text('⛔ Выключение', 'admin:server:shutdown').row()
+  .text('◀️ Назад', 'admin:main');
+
+const panelText: Record<string, string> = {
+  main:    '⚡ <b>Панель администратора</b>',
+  users:   '👥 <b>Пользователи</b>',
+  promo:   '🎫 <b>Промокоды</b>',
+  server:  '⚙️ <b>Сервер</b>',
+  terminal: '💻 <b>Терминал</b>\n\nВведи команду:',
+};
+
+const panelKb: Record<string, InlineKeyboard> = {
+  main:    mainKb,
+  users:   usersKb,
+  promo:   promoKb,
+  server:  serverKb,
+  terminal: new InlineKeyboard().text('◀️ Назад', 'admin:main'),
+};
+
+// ─── Panel helpers ────────────────────────────────────────────────────────────
+
+async function openPanel(ctx: Context, section = 'main'): Promise<void> {
+  const userId = ctx.from!.id;
+  const existing = panelMessageId.get(userId);
+
+  if (existing) {
+    try {
+      await ctx.api.editMessageText(ctx.chat!.id, existing, panelText[section], {
+        ...HTML,
+        reply_markup: panelKb[section],
+      });
+      return;
+    } catch {
+      // Message deleted or too old — fall through to send new
     }
-  } catch {}
+  }
+
+  const sent = await ctx.reply(panelText[section], { ...HTML, reply_markup: panelKb[section] });
+  panelMessageId.set(userId, sent.message_id);
 }
 
-type Section = 'main' | 'users' | 'promo' | 'server';
-const currentSection = new Map<number, Section>();
-
-// ─── User detail ─────────────────────────────────────────────────────────────
+// ─── User detail helpers ──────────────────────────────────────────────────────
 
 function buildUserDetailMessage(xrayUsername: string, period: TrafficPeriod): string {
   const stats = queryUserStats(xrayUsername, period);
@@ -125,85 +138,47 @@ function buildUserDetailKeyboard(xrayUsername: string, current: TrafficPeriod): 
 // ─── Registration ─────────────────────────────────────────────────────────────
 
 export function registerAdminHandlers(bot: Bot<Context>): void {
+
   bot.command('admin', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) {
-      await ctx.reply('Нет доступа.');
-      return;
-    }
-    currentSection.set(ctx.from!.id, 'main');
-    const sent = await ctx.reply('⚡ <b>Панель администратора</b>', {
-      ...HTML,
-      reply_markup: mainKeyboard,
+    if (!isAdmin(ctx.from!.id)) { await ctx.reply('Нет доступа.'); return; }
+    await openPanel(ctx, 'main');
+  });
+
+  // ─── Navigation callbacks (edit panel in-place, no new messages) ──────────
+
+  bot.callbackQuery('admin:main', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(panelText['main'], { ...HTML, reply_markup: panelKb['main'] });
+    panelMessageId.set(ctx.from.id, ctx.callbackQuery.message!.message_id);
+  });
+
+  for (const section of ['users', 'promo', 'server'] as const) {
+    bot.callbackQuery(`admin:${section}`, async (ctx) => {
+      if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(panelText[section], { ...HTML, reply_markup: panelKb[section] });
     });
-    menuMessageId.set(ctx.from!.id, sent.message_id);
-  });
+  }
 
-  // ─── Navigation ──────────────────────────────────────────────────────────
-
-  bot.hears('👥 Пользователи', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    await deleteUserMessage(ctx);
-    currentSection.set(ctx.from!.id, 'users');
-    await sendOrEditMenu(ctx, '👥 <b>Пользователи</b>', usersKeyboard);
-  });
-
-  bot.hears('🎫 Промокоды', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    await deleteUserMessage(ctx);
-    currentSection.set(ctx.from!.id, 'promo');
-    await sendOrEditMenu(ctx, '🎫 <b>Промокоды</b>', promoKeyboard);
-  });
-
-  bot.hears('⚙️ Сервер', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    await deleteUserMessage(ctx);
-    currentSection.set(ctx.from!.id, 'server');
-    await sendOrEditMenu(ctx, '⚙️ <b>Сервер</b>', serverKeyboard);
-  });
-
-  bot.hears('💻 Терминал', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    addWithTTL(awaitingShell, ctx.from!.id);
-    await ctx.reply('Введи команду:');
-  });
-
-  bot.hears('◀️ Назад', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    await deleteUserMessage(ctx);
-    currentSection.set(ctx.from!.id, 'main');
-    await sendOrEditMenu(ctx, '⚡ <b>Панель администратора</b>', mainKeyboard);
+  bot.callbackQuery('admin:terminal', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    addWithTTL(awaitingShell, ctx.from.id);
+    await ctx.editMessageText(panelText['terminal'], { ...HTML, reply_markup: panelKb['terminal'] });
   });
 
   // ─── Users ───────────────────────────────────────────────────────────────
 
-  bot.hears('📋 Список', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    const section = currentSection.get(ctx.from!.id);
-
-    if (section === 'promo') {
-      const codes = listPromoCodes();
-      if (codes.length === 0) {
-        await ctx.reply('Промокодов нет.');
-        return;
-      }
-      let text = '📋 <b>Промокоды:</b>\n\n';
-      for (const c of codes.slice(0, 20)) {
-        const status = c.used_by ? '✅ использован' : '⏳ активен';
-        text += `• <code>${escapeHtml(c.code)}</code> — ${status}\n`;
-      }
-      await ctx.reply(text, HTML);
-      return;
-    }
-
+  bot.callbackQuery('admin:users:list', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
     try {
       const xrayUsers = xrayListUsers();
       const dbUsers = listUsers();
       const dbMap = new Map(dbUsers.map(u => [u.xray_username, u]));
 
-      if (xrayUsers.length === 0) {
-        await ctx.reply('Пользователей нет.');
-        return;
-      }
+      if (xrayUsers.length === 0) { await ctx.reply('Пользователей нет.'); return; }
 
       const allStats = queryAllStats('all');
       const statsMap = new Map(allStats.map(s => [s.name, s]));
@@ -212,7 +187,9 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
       let text = `👥 <b>Пользователи (${xrayUsers.length}):</b>\n\n`;
       for (const u of xrayUsers) {
         const dbUser = dbMap.get(u.name);
-        const tg = dbUser?.telegram_username ? `@${escapeHtml(dbUser.telegram_username)}` : escapeHtml(dbUser?.first_name || '—');
+        const tg = dbUser?.telegram_username
+          ? `@${escapeHtml(dbUser.telegram_username)}`
+          : escapeHtml(dbUser?.first_name || '—');
         const s = statsMap.get(u.name);
         const total = s ? formatBytes(s.upload + s.download) : '—';
         text += `• <code>${escapeHtml(u.name)}</code> (${tg}) — ${total}\n`;
@@ -224,54 +201,119 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     }
   });
 
-  bot.hears('➕ Добавить', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    addWithTTL(awaitingAddUser, ctx.from!.id);
-    await ctx.reply('Введи имя нового пользователя (латиница):');
+  bot.callbackQuery('admin:users:add', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    addWithTTL(awaitingAddUser, ctx.from.id);
+    await ctx.editMessageText(
+      '👥 <b>Пользователи</b>\n\nВведи имя нового пользователя (латиница):',
+      { ...HTML, reply_markup: new InlineKeyboard().text('◀️ Отмена', 'admin:users') },
+    );
   });
 
-  bot.hears('🗑 Удалить', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    const section = currentSection.get(ctx.from!.id);
-
-    if (section === 'promo') {
-      const codes = listPromoCodes().filter(c => c.used_by === null);
-      if (codes.length === 0) {
-        await ctx.reply('Нет активных промокодов.');
-        return;
-      }
-      const keyboard = new InlineKeyboard();
-      for (const c of codes.slice(0, 20)) {
-        keyboard.text(`❌ ${c.code}`, `del_promo:${c.code}`).row();
-      }
-      await ctx.reply('Выбери промокод:', { reply_markup: keyboard });
-      return;
-    }
-
+  bot.callbackQuery('admin:users:del', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
     try {
       const xrayUsers = xrayListUsers();
-      if (xrayUsers.length === 0) {
-        await ctx.reply('Пользователей нет.');
-        return;
-      }
-      const keyboard = new InlineKeyboard();
-      for (const u of xrayUsers) {
-        keyboard.text(`❌ ${u.name}`, `del_user:${u.name}`).row();
-      }
-      await ctx.reply('Выбери пользователя:', { reply_markup: keyboard });
+      if (xrayUsers.length === 0) { await ctx.answerCallbackQuery('Пользователей нет'); return; }
+      const kb = new InlineKeyboard();
+      for (const u of xrayUsers) kb.text(`❌ ${u.name}`, `del_user:${u.name}`).row();
+      kb.text('◀️ Назад', 'admin:users');
+      await ctx.editMessageText('👥 <b>Удалить пользователя:</b>', { ...HTML, reply_markup: kb });
     } catch (e) {
       await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
     }
   });
 
-  bot.hears('🎫 Создать', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
+  // ─── Promos ───────────────────────────────────────────────────────────────
+
+  bot.callbackQuery('admin:promo:create', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
     const code = crypto.randomBytes(4).toString('hex').toUpperCase();
-    createPromoCode(code, ctx.from!.id);
+    createPromoCode(code, ctx.from.id);
     await ctx.reply(`🎫 Создан: <code>${code}</code>`, HTML);
   });
 
-  // ─── User detail with period breakdown ───────────────────────────────────
+  bot.callbackQuery('admin:promo:list', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    const codes = listPromoCodes();
+    if (codes.length === 0) { await ctx.reply('Промокодов нет.'); return; }
+    let text = '📋 <b>Промокоды:</b>\n\n';
+    for (const c of codes.slice(0, 20)) {
+      const status = c.used_by ? '✅ использован' : '⏳ активен';
+      text += `• <code>${escapeHtml(c.code)}</code> — ${status}\n`;
+    }
+    await ctx.reply(text, HTML);
+  });
+
+  bot.callbackQuery('admin:promo:del', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    const codes = listPromoCodes().filter(c => c.used_by === null);
+    if (codes.length === 0) { await ctx.answerCallbackQuery('Нет активных промокодов'); return; }
+    const kb = new InlineKeyboard();
+    for (const c of codes.slice(0, 20)) kb.text(`❌ ${c.code}`, `del_promo:${c.code}`).row();
+    kb.text('◀️ Назад', 'admin:promo');
+    await ctx.editMessageText('🎫 <b>Удалить промокод:</b>', { ...HTML, reply_markup: kb });
+  });
+
+  // ─── Server ───────────────────────────────────────────────────────────────
+
+  bot.callbackQuery('admin:server:status', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    try {
+      const status = getXrayStatus();
+      await ctx.reply(`<pre>${escapeHtml(status.slice(0, 3800))}</pre>`, HTML);
+    } catch (e) {
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
+    }
+  });
+
+  bot.callbackQuery('admin:server:restart', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    try {
+      await flushTraffic();
+      restartXray();
+      await ctx.editMessageText('✅ xray перезапущен.', { ...HTML, reply_markup: new InlineKeyboard().text('◀️ Назад', 'admin:server') });
+    } catch (e) {
+      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
+    }
+  });
+
+  bot.callbackQuery('admin:server:reboot', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText('⚠️ Перезагрузить сервер?', {
+      reply_markup: new InlineKeyboard()
+        .text('✅ Да', 'confirm:reboot')
+        .text('❌ Отмена', 'admin:server'),
+    });
+  });
+
+  bot.callbackQuery('admin:server:shutdown', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText('⚠️ Выключить сервер?', {
+      reply_markup: new InlineKeyboard()
+        .text('✅ Да', 'confirm:shutdown')
+        .text('❌ Отмена', 'admin:server'),
+    });
+  });
+
+  bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
+    await ctx.answerCallbackQuery();
+    const action = ctx.match[1];
+    if (action === 'reboot')   { await ctx.editMessageText('🔁 Перезагрузка сервера...'); rebootServer(); return; }
+    if (action === 'shutdown') { await ctx.editMessageText('⛔ Выключение сервера...'); shutdownServer(); return; }
+  });
+
+  // ─── User detail ─────────────────────────────────────────────────────────
 
   bot.callbackQuery(/^user_detail:(.+)$/, async (ctx) => {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
@@ -286,7 +328,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
   bot.callbackQuery(/^user_traffic:(.+):(.+)$/, async (ctx) => {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
     await ctx.answerCallbackQuery();
-    const name = ctx.match[1];
+    const name   = ctx.match[1];
     const period = ctx.match[2] as TrafficPeriod;
     await ctx.editMessageText(
       buildUserDetailMessage(name, period),
@@ -294,7 +336,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     );
   });
 
-  // ─── Inline: delete user ─────────────────────────────────────────────────
+  // ─── Delete user ─────────────────────────────────────────────────────────
 
   bot.callbackQuery(/^del_user:(.+)$/, async (ctx) => {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
@@ -312,12 +354,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
     await ctx.answerCallbackQuery();
     const name = ctx.match[1];
-
-    if (name === 'cancel') {
-      await ctx.editMessageText('Отменено.');
-      return;
-    }
-
+    if (name === 'cancel') { await ctx.editMessageText('Отменено.'); return; }
     try {
       xrayDeleteUser(name);
       deleteUserTraffic(name);
@@ -329,7 +366,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     }
   });
 
-  // ─── Inline: delete promo ────────────────────────────────────────────────
+  // ─── Delete promo ─────────────────────────────────────────────────────────
 
   bot.callbackQuery(/^del_promo:(.+)$/, async (ctx) => {
     if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
@@ -343,56 +380,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     }
   });
 
-  // ─── Server ──────────────────────────────────────────────────────────────
-
-  bot.hears('📊 Статус', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    try {
-      const status = getXrayStatus();
-      await ctx.reply(`<pre>${escapeHtml(status.slice(0, 3800))}</pre>`, HTML);
-    } catch (e) {
-      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
-    }
-  });
-
-  bot.hears('🔄 Рестарт', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    try {
-      restartXray();
-      await ctx.reply('✅ xray перезапущен.');
-    } catch (e) {
-      await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
-    }
-  });
-
-  bot.hears('🔁 Перезагрузка', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    await ctx.reply('⚠️ Перезагрузить сервер?', {
-      reply_markup: new InlineKeyboard()
-        .text('✅ Да', 'confirm:reboot')
-        .text('❌ Отмена', 'confirm:cancel'),
-    });
-  });
-
-  bot.hears('⛔ Выключение', async (ctx) => {
-    if (!isAdmin(ctx.from!.id)) return;
-    await ctx.reply('⚠️ Выключить сервер?', {
-      reply_markup: new InlineKeyboard()
-        .text('✅ Да', 'confirm:shutdown')
-        .text('❌ Отмена', 'confirm:cancel'),
-    });
-  });
-
-  bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
-    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery('Нет доступа'); return; }
-    await ctx.answerCallbackQuery();
-    const action = ctx.match[1];
-    if (action === 'cancel')   { await ctx.editMessageText('Отменено.'); return; }
-    if (action === 'reboot')   { await ctx.editMessageText('🔁 Перезагрузка сервера...'); rebootServer(); return; }
-    if (action === 'shutdown') { await ctx.editMessageText('⛔ Выключение сервера...'); shutdownServer(); return; }
-  });
-
-  // ─── Shell ───────────────────────────────────────────────────────────────
+  // ─── Shell command ────────────────────────────────────────────────────────
 
   bot.command('shell', async (ctx) => {
     if (!isAdmin(ctx.from!.id)) { await ctx.reply('Нет доступа.'); return; }
@@ -405,7 +393,7 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
     await executeShell(ctx, command);
   });
 
-  // ─── Text input ──────────────────────────────────────────────────────────
+  // ─── Text input handler ───────────────────────────────────────────────────
 
   bot.on('message:text', async (ctx, next) => {
     const telegramId = ctx.from!.id;
@@ -440,6 +428,8 @@ export function registerAdminHandlers(bot: Bot<Context>): void {
           `✅ <code>${escapeHtml(name)}</code> создан!\n\nСсылка:\n${linkText}`,
           HTML,
         );
+        // Restore panel
+        await openPanel(ctx, 'users');
       } catch (e) {
         await ctx.reply(`Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
       }
@@ -461,6 +451,10 @@ async function executeShell(ctx: Context, command: string): Promise<void> {
       HTML,
     );
   } catch (e) {
-    await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `Ошибка: ${escapeHtml((e as Error).message)}`, HTML);
+    await ctx.api.editMessageText(
+      ctx.chat!.id, msg.message_id,
+      `Ошибка: ${escapeHtml((e as Error).message)}`,
+      HTML,
+    );
   }
 }

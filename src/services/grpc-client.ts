@@ -41,3 +41,11 @@ export function getStatsClient(): StatsClient {
   cachedHost = host;
   return cachedClient;
 }
+
+export function resetStatsClient(): void {
+  if (cachedClient) {
+    cachedClient.close();
+    cachedClient = null;
+    cachedHost = null;
+  }
+}

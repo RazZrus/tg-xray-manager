@@ -12,6 +12,7 @@ export interface Config {
   xrayPort: number;
   sni: string;
   statsPort: number;
+  serverName: string;
 }
 
 let cachedConfig: Config | null = null;

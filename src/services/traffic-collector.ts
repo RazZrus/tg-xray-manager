@@ -1,4 +1,4 @@
-import { getStatsClient } from './grpc-client.js';
+import { getStatsClient, resetStatsClient } from './grpc-client.js';
 import { insertTrafficBatch } from '../db/index.js';
 
 let consecutiveFailures = 0;
@@ -6,12 +6,15 @@ let consecutiveFailures = 0;
 function collectAndReset(): Promise<void> {
   return new Promise((resolve) => {
     const c = getStatsClient();
-    c.QueryStats({ pattern: 'user>>>*>>>traffic', reset: true }, (err, response) => {
+    // xray pattern is substring match, not glob — 'user>>>' matches all user stat names
+    c.QueryStats({ pattern: 'user>>>', reset: true }, (err, response) => {
       if (err || !response?.stat?.length) {
         consecutiveFailures++;
         if (consecutiveFailures === 3) {
           console.warn('[collector] xray Stats API unreachable');
         }
+        // Drop the dead client so next call creates a fresh connection
+        resetStatsClient();
         resolve();
         return;
       }
@@ -51,6 +54,11 @@ function collectAndReset(): Promise<void> {
 
 const COLLECT_INTERVAL_MS = 60 * 1000; // 1 minute
 let intervalId: ReturnType<typeof setInterval> | null = null;
+
+/** Collect and persist traffic immediately — call before restarting xray. */
+export function flushTraffic(): Promise<void> {
+  return collectAndReset();
+}
 
 export function startTrafficCollector(): void {
   collectAndReset().catch((e) => console.error('[collector]', e));

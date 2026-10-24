@@ -46,11 +46,30 @@ get_server_ip() {
   curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
+get_server_name() {
+  local bot_config="$HOME/.tg-xray-bot/config.json"
+  if [[ -f "$bot_config" ]]; then
+    local name
+    name=$(jq -r '.serverName // empty' "$bot_config" 2>/dev/null)
+    [[ -n "$name" ]] && echo "$name" && return
+  fi
+  hostname
+}
+
 get_xray_port()  { cfg "${VLESS}.port // 443"; }
 get_grpc_port()  { cfg "${VLESS_GRPC}.port // 8443"; }
 get_sni()        { cfg "${VLESS}.streamSettings.realitySettings.serverNames[0] // \"www.microsoft.com\""; }
 get_short_id()   { cfg "${VLESS}.streamSettings.realitySettings.shortIds[0] // \"\""; }
-get_public_key() { cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty"; }
+get_public_key() {
+  local pk
+  pk=$(cfg "${VLESS}.streamSettings.realitySettings.publicKey // empty")
+  if [[ -z "$pk" ]]; then
+    local priv
+    priv=$(cfg "${VLESS}.streamSettings.realitySettings.privateKey")
+    pk=$($XRAY_BIN x25519 -i "$priv" 2>/dev/null | grep 'Public key' | awk '{print $NF}')
+  fi
+  echo "$pk"
+}
 
 # Find user by name in TCP inbound, return UUID
 get_uuid() {
@@ -65,14 +84,15 @@ make_link() {
   uuid=$(get_uuid "$name")
   [[ -n "$uuid" ]] || die "User '$name' not found"
 
-  local ip port sni short_id public_key
+  local ip port sni short_id public_key display_name
   ip=$(get_server_ip)
   port=$(get_xray_port)
   sni=$(get_sni)
   short_id=$(get_short_id)
   public_key=$(get_public_key)
+  display_name=$(get_server_name)
 
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${name}"
+  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${display_name}"
 }
 
 # Build gRPC vless:// link
@@ -82,14 +102,15 @@ make_grpc_link() {
   uuid=$(get_uuid "$name")
   [[ -n "$uuid" ]] || die "User '$name' not found"
 
-  local ip port sni short_id public_key
+  local ip port sni short_id public_key display_name
   ip=$(get_server_ip)
   port=$(get_grpc_port)
   sni=$(get_sni)
   short_id=$(get_short_id)
   public_key=$(get_public_key)
+  display_name=$(get_server_name)
 
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${name}-grpc"
+  echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${display_name} (gRPC)"
 }
 
 # ─── Stats API (gRPC) ───────────────────────────────────────────────────────
@@ -343,6 +364,9 @@ cmd_status() {
 
 cmd_restart() {
   require_root
+  # Signal the bot to flush traffic before xray resets counters
+  systemctl kill --signal=USR1 tg-xray-bot 2>/dev/null || true
+  sleep 2
   systemctl restart xray
   echo "xray restarted"
 }
