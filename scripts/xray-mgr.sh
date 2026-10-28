@@ -119,51 +119,40 @@ get_uuid() {
   jq -r --arg n "$name" "${VLESS}.settings.clients[] | select(.email == \$n) | .id" "$XRAY_CONFIG"
 }
 
-# Build TCP vless:// link
-make_link() {
-  local name="$1"
+# _make_vless_link <name> <proto: tcp|grpc>
+_make_vless_link() {
+  local name="$1" proto="$2"
   local uuid
   uuid=$(get_uuid "$name")
   [[ -n "$uuid" ]] || die "User '$name' not found"
 
-  local ip port sni short_id public_key display_name
+  local ip sni short_id public_key display_name port
   ip=$(get_server_ip)
-  port=$(get_xray_port)
   sni=$(get_sni)
   short_id=$(get_short_id)
   public_key=$(get_public_key)
   display_name=$(get_server_name)
 
   [[ -n "$ip" ]]         || die "Could not determine server IP"
-  [[ -n "$port" ]]       || die "Could not determine xray port"
   [[ -n "$sni" ]]        || die "Could not determine SNI"
   [[ -n "$public_key" ]] || die "Public key not found. Check ~/.tg-xray-bot/config.json or xray config privateKey"
 
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${display_name} [TCP]"
+  case "$proto" in
+    tcp)
+      port=$(get_xray_port)
+      [[ -n "$port" ]] || die "Could not determine xray port"
+      echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${display_name} [TCP]"
+      ;;
+    grpc)
+      port=$(get_grpc_port)
+      [[ -n "$port" ]] || die "Could not determine gRPC port"
+      echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${display_name} [gRPC]"
+      ;;
+  esac
 }
 
-# Build gRPC vless:// link
-make_grpc_link() {
-  local name="$1"
-  local uuid
-  uuid=$(get_uuid "$name")
-  [[ -n "$uuid" ]] || die "User '$name' not found"
-
-  local ip port sni short_id public_key display_name
-  ip=$(get_server_ip)
-  port=$(get_grpc_port)
-  sni=$(get_sni)
-  short_id=$(get_short_id)
-  public_key=$(get_public_key)
-  display_name=$(get_server_name)
-
-  [[ -n "$ip" ]]         || die "Could not determine server IP"
-  [[ -n "$port" ]]       || die "Could not determine gRPC port"
-  [[ -n "$sni" ]]        || die "Could not determine SNI"
-  [[ -n "$public_key" ]] || die "Public key not found. Check ~/.tg-xray-bot/config.json or xray config privateKey"
-
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=vless-grpc#${display_name} [gRPC]"
-}
+make_link()      { _make_vless_link "$1" tcp; }
+make_grpc_link() { _make_vless_link "$1" grpc; }
 
 # ─── Stats API (gRPC) ───────────────────────────────────────────────────────
 
@@ -278,8 +267,7 @@ cmd_add() {
     (.inbounds[] | select(.tag == "vless-reality") | .settings.clients) += [{"id": $u, "email": $n, "flow": "xtls-rprx-vision"}]
     | (.inbounds[] | select(.tag == "vless-grpc")  | .settings.clients) += [{"id": $u, "email": $n}]
   ' "$XRAY_CONFIG" > "$tmp"
-  cp "$tmp" "$XRAY_CONFIG"
-  rm "$tmp"
+  mv "$tmp" "$XRAY_CONFIG"
 
   # Add at runtime via API (no restart)
   api_add_user "vless-reality" "$name" "$uuid" "xtls-rprx-vision" 2>/dev/null || true
@@ -308,8 +296,7 @@ cmd_del() {
     del(.inbounds[] | select(.tag == "vless-reality") | .settings.clients[] | select(.email == $n))
     | del(.inbounds[] | select(.tag == "vless-grpc")  | .settings.clients[] | select(.email == $n))
   ' "$XRAY_CONFIG" > "$tmp"
-  cp "$tmp" "$XRAY_CONFIG"
-  rm "$tmp"
+  mv "$tmp" "$XRAY_CONFIG"
 
   # Remove at runtime via API (no restart)
   api_remove_user "vless-reality" "$name" 2>/dev/null || true
@@ -344,29 +331,20 @@ cmd_links() {
   make_grpc_link "$name"
 }
 
-cmd_qr() {
+_cmd_qr() {
   require_jq
   require_qrencode
-  local name="$1"
-  [[ -n "$name" ]] || die "Usage: xray-mgr qr <name>"
+  local name="$1" proto="$2"
+  [[ -n "$name" ]] || die "Usage: xray-mgr qr${proto:+_${proto}} <name>"
   local link
-  link=$(make_link "$name")
+  link=$(_make_vless_link "$name" "$proto")
   echo "$link" | qrencode -t ANSIUTF8
   echo ""
   echo "$link"
 }
 
-cmd_qr_grpc() {
-  require_jq
-  require_qrencode
-  local name="$1"
-  [[ -n "$name" ]] || die "Usage: xray-mgr qr_grpc <name>"
-  local link
-  link=$(make_grpc_link "$name")
-  echo "$link" | qrencode -t ANSIUTF8
-  echo ""
-  echo "$link"
-}
+cmd_qr()      { _cmd_qr "${1:-}" tcp; }
+cmd_qr_grpc() { _cmd_qr "${1:-}" grpc; }
 
 cmd_stats() {
   require_jq
@@ -478,15 +456,13 @@ Commands:
 EOF
 }
 
-sync_bot_config || true
-
 COMMAND="${1:-}"
 shift || true
 
 case "$COMMAND" in
   list)      cmd_list ;;
-  add)       cmd_add "${1:-}" ;;
-  del)       cmd_del "${1:-}" ;;
+  add)       sync_bot_config || true; cmd_add "${1:-}" ;;
+  del)       sync_bot_config || true; cmd_del "${1:-}" ;;
   link)      cmd_link "${1:-}" ;;
   link_grpc) cmd_link_grpc "${1:-}" ;;
   links)     cmd_links "${1:-}" ;;
@@ -497,6 +473,6 @@ case "$COMMAND" in
   find-uuid) cmd_find_uuid "${1:-}" ;;
   sync)      cmd_sync ;;
   status)    cmd_status ;;
-  restart)   cmd_restart ;;
+  restart)   sync_bot_config || true; cmd_restart ;;
   *)         usage; exit 1 ;;
 esac
